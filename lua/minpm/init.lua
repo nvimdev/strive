@@ -1090,3 +1090,5 @@ end
 
 -- Create commands
 create_commands()
+
+return { use = M.use }
