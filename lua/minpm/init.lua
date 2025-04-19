@@ -404,7 +404,7 @@ function Plugin.new(spec)
     keys = {}, -- Keys to trigger loading
 
     -- Configuration
-    setup_opts = spec.setup or {}, -- Options for plugin setup()
+    setup_opts = spec.setup or nil, -- Options for plugin setup()
     config_fn = spec.config, -- Config function to run after loading
     after_fn = spec.after, -- Function to run after dependencies load
     colorscheme = spec.theme, -- Theme to apply if this is a colorscheme
@@ -457,37 +457,23 @@ function Plugin:load()
     vim.cmd.packadd(self.plugin_name)
   end
 
-  -- Load and setup
-  self:_setup_plugin()
-
-  -- Update status
-  self.status = STATUS.LOADED
-
-  return true
-end
-
--- Internal function to setup the plugin
-function Plugin:_setup_plugin()
-  -- Try to get the module name
-  local module_name = self.plugin_name:gsub('%.nvim$', ''):gsub('-nvim$', ''):gsub('^nvim%-', '')
-
-  -- Try to load the module
-  local ok, module = pcall(require, module_name)
-
-  -- Run setup if available
-  if ok and type(module) == 'table' and type(module.setup) == 'function' then
-    module.setup(self.setup_opts)
+  if self.setup_opts then
+    local module_name = self.plugin_name:gsub('%.nvim$', ''):gsub('-nvim$', ''):gsub('^nvim%-', '')
+    -- Try to load the module
+    local ok, module = pcall(require, module_name)
+    if ok and type(module) == 'table' and type(module.setup) == 'function' then
+      module.setup(self.setup_opts)
+    end
   end
 
   -- Run config function if provided
   if type(self.config_fn) == 'function' then
     self.config_fn()
   end
+  -- Update status
+  self.status = STATUS.LOADED
 
-  -- Apply colorscheme if this is a theme
-  if self.colorscheme then
-    vim.cmd.colorscheme(self.colorscheme)
-  end
+  return true
 end
 
 -- Set up lazy loading on specific events
@@ -540,22 +526,10 @@ function Plugin:ft(filetypes)
     callback = function(args)
       -- Don't re-emit the event if we've already loaded the plugin
       if not self.loaded and self:load() then
-        -- We need to re-emit the event, but carefully to avoid nesting too deep
-        -- Schedule the event emission to avoid nesting too deep
-        local buf = args.buf
-        local ft = args.match
-
-        vim.schedule(function()
-          api.nvim_exec_autocmds('FileType', {
-            modeline = false,
-            pattern = ft,
-            group = vim.api.nvim_create_augroup(
-              'minpm_' .. self.plugin_name .. '_after_load_ft',
-              { clear = true }
-            ),
-            buffer = buf,
-          })
-        end)
+        api.nvim_exec_autocmds('FileType', {
+          modeline = false,
+          pattern = args.match,
+        })
       end
     end,
   })
