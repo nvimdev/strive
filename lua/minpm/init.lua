@@ -16,10 +16,6 @@ local data_dir = vim.fn.stdpath('data')
 local START_DIR = vim.fs.joinpath(data_dir, 'site', 'pack', 'minpm', 'start')
 local OPT_DIR = vim.fs.joinpath(data_dir, 'site', 'pack', 'minpm', 'opt')
 
--- Ensure paths exist
-vim.fn.mkdir(START_DIR, 'p')
-vim.fn.mkdir(OPT_DIR, 'p')
-
 -- Add to packpath
 vim.opt.packpath:prepend(vim.fs.joinpath(data_dir, 'site'))
 
@@ -1094,9 +1090,3 @@ end
 
 -- Create commands
 create_commands()
-
--- =====================================================================
--- 7. Initialize the Module
--- =====================================================================
-
-return M
