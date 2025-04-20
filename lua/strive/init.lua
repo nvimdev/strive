@@ -177,9 +177,7 @@ function TaskQueue:status()
   }
 end
 
--- Create main task queue
 local task_queue = TaskQueue.new(DEFAULT_SETTINGS.max_concurrent_tasks)
-
 -- =====================================================================
 -- 4. UI Window
 -- =====================================================================
@@ -376,6 +374,9 @@ function Plugin.new(spec)
 
   -- Extract plugin name from repo
   local name = vim.fs.normalize(spec.name)
+  if vim.startswith(name, vim.env.HOME) then
+    spec.dev = true
+  end
   local parts = vim.split(name, '/', { trimempty = true })
   local plugin_name = parts[#parts]:gsub('%.git$', '')
 
@@ -398,7 +399,7 @@ function Plugin.new(spec)
     keys = {}, -- Keys to trigger loading
 
     -- Configuration
-    setup_opts = spec.setup or nil, -- Options for plugin setup()
+    setup_opts = spec.setup or {}, -- Options for plugin setup()
     config_fn = spec.config, -- Config function to run after loading
     after_fn = spec.after, -- Function to run after dependencies load
     colorscheme = spec.theme, -- Theme to apply if this is a colorscheme
@@ -414,7 +415,11 @@ end
 
 -- Get the plugin installation path
 function Plugin:get_path()
-  return vim.fs.joinpath(self.is_lazy and OPT_DIR or START_DIR, self.plugin_name)
+  if not self.is_dev then
+    return vim.fs.joinpath(self.is_lazy and OPT_DIR or START_DIR, self.plugin_name)
+  end
+  return vim.g.strive_dev_path and vim.fs.joinpath(vim.g.strive_dev_path, self.plugin_name)
+    or self.name
 end
 
 -- Check if plugin is installed (async version)
@@ -447,15 +452,20 @@ function Plugin:load()
 
   -- If it's a lazy-loaded plugin, add it
   if self.is_lazy then
-    vim.cmd.packadd(self.plugin_name)
+    if not self.is_dev then
+      vim.cmd.packadd(self.plugin_name)
+    else
+      vim.opt.rtp:append(path)
+    end
   end
 
-  if self.setup_opts then
-    local module_name = self.plugin_name:gsub('%.nvim$', ''):gsub('-nvim$', ''):gsub('^nvim%-', '')
-    -- Try to load the module
-    local ok, module = pcall(require, module_name)
-    if ok and type(module) == 'table' and type(module.setup) == 'function' then
-      module.setup(self.setup_opts)
+  local module_name = self.plugin_name:gsub('%.nvim$', ''):gsub('-nvim$', ''):gsub('^nvim%-', '')
+  -- Try to load the module
+  local ok, module = pcall(require, module_name)
+  if ok and type(module) == 'table' then
+    local setup = rawget(module, 'setup')
+    if setup and type(setup) == 'function' then
+      setup(self.setup_opts)
     end
   end
 
@@ -544,7 +554,7 @@ function Plugin:cmd(commands)
     end, {
       nargs = '*',
       bang = true,
-      complete = function(arg_lead, cmd_line, cursor_pos)
+      complete = function(_, cmd_line, _)
         -- If the plugin has a completion function, load the plugin first
         self:load()
 
