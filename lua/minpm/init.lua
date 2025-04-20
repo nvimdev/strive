@@ -18,6 +18,7 @@ local OPT_DIR = vim.fs.joinpath(data_dir, 'site', 'pack', 'minpm', 'opt')
 
 -- Add to packpath
 vim.opt.packpath:prepend(vim.fs.joinpath(data_dir, 'site'))
+vim.g.pm_loaded = 0
 
 -- Default settings
 local DEFAULT_SETTINGS = {
@@ -218,15 +219,12 @@ end
 
 -- Set key mappings for the window
 function ProgressWindow:set_keymaps()
-  local opts = { buffer = self.bufnr, noremap = true, silent = true }
-
-  -- Close window with 'q' or <Esc>
-  vim.keymap.set('n', 'q', function()
-    self:close()
-  end, opts)
-  vim.keymap.set('n', '<Esc>', function()
-    self:close()
-  end, opts)
+  local opts = { buffer = self.bufnr }
+  for _, key in ipairs({ 'q', '<ESC>' }) do
+    vim.keymap.set('n', key, function()
+      self:close()
+    end, opts)
+  end
 
   -- Add other useful keymaps
   vim.keymap.set('n', 'r', function()
@@ -408,8 +406,6 @@ function Plugin.new(spec)
     -- Dependencies
     dependencies = spec.depends or {}, -- Dependencies
 
-    -- Internal state
-    autocmd_ids = {}, -- Autocmd IDs for cleanup
     user_commands = {}, -- Created user commands
   }, Plugin)
 
@@ -447,6 +443,7 @@ function Plugin:load()
   -- Prevent recursive loading
   -- Set loaded to true before actual loading to prevent infinite loops
   self.loaded = true
+  vim.g.pm_loaded = vim.g.pm_loaded + 1
 
   -- If it's a lazy-loaded plugin, add it
   if self.is_lazy then
@@ -479,11 +476,12 @@ function Plugin:on(events)
 
   -- Create autocmds for each event
   for _, event in ipairs(self.events) do
-    local autocmd_id = api.nvim_create_autocmd(event, {
+    api.nvim_create_autocmd(event, {
       group = api.nvim_create_augroup(
         'minpm_' .. self.plugin_name .. '_' .. event,
         { clear = true }
       ),
+      once = true,
       callback = function(args)
         -- Don't re-emit the event if we've already loaded the plugin
         if not self.loaded and self:load() then
@@ -496,16 +494,11 @@ function Plugin:on(events)
             api.nvim_exec_autocmds(event, {
               modeline = false,
               data = event_data,
-              group = vim.api.nvim_create_augroup(
-                'minpm_' .. self.plugin_name .. '_after_load',
-                { clear = true }
-              ),
             })
           end)
         end
       end,
     })
-    table.insert(self.autocmd_ids, autocmd_id)
   end
 
   return self
@@ -515,10 +508,10 @@ end
 function Plugin:ft(filetypes)
   self.is_lazy = true
   self.filetypes = type(filetypes) ~= 'table' and { filetypes } or filetypes
-
-  local autocmd_id = api.nvim_create_autocmd('FileType', {
+  api.nvim_create_autocmd('FileType', {
     group = api.nvim_create_augroup('minpm_' .. self.plugin_name .. '_ft', { clear = true }),
     pattern = self.filetypes,
+    once = true,
     callback = function(args)
       -- Don't re-emit the event if we've already loaded the plugin
       if not self.loaded and self:load() then
@@ -529,7 +522,6 @@ function Plugin:ft(filetypes)
       end
     end,
   })
-  table.insert(self.autocmd_ids, autocmd_id)
 
   return self
 end
@@ -560,12 +552,7 @@ function Plugin:cmd(commands)
         local ok, result = pcall(function()
           return vim.fn.getcompletion(cmd_line, 'cmdline')
         end)
-
-        if ok then
-          return result
-        else
-          return {}
-        end
+        return ok and result or {}
       end,
     })
 
@@ -1064,19 +1051,19 @@ end
 
 -- Create user commands
 local function create_commands()
-  vim.api.nvim_create_user_command('MinPMInstall', function()
+  api.nvim_create_user_command('MinPMInstall', function()
     M.install()
   end, {
     desc = 'Install plugins',
   })
 
-  vim.api.nvim_create_user_command('MinPMUpdate', function()
+  api.nvim_create_user_command('MinPMUpdate', function()
     M.update()
   end, {
     desc = 'Update plugins',
   })
 
-  vim.api.nvim_create_user_command('MinPMClean', function()
+  api.nvim_create_user_command('MinPMClean', function()
     M.clean()
   end, {
     desc = 'Clean unused plugins',
