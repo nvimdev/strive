@@ -409,7 +409,7 @@ function Plugin.new(spec)
     dependencies = spec.depends or {}, -- Dependencies
 
     user_commands = {}, -- Created user commands
-    build = spec.build or nil,
+    build_action = spec.build or nil,
   }, Plugin)
 
   return self
@@ -673,8 +673,8 @@ function Plugin:theme(name)
 end
 
 function Plugin:build(action)
-  assert(type(action) ~= 'string')
-  self.build = action
+  assert(type(action) == 'string')
+  self.build_action = action
   return self
 end
 
@@ -724,8 +724,8 @@ function Plugin:install()
           if self.colorscheme then
             self:theme(self.colorscheme)
           end
-          if self.build then
-            vim.cmd(self.build)
+          if self.build_action then
+            vim.cmd(self.build_action)
           end
           callback(true)
         else
@@ -760,19 +760,54 @@ function Plugin:install()
   end)()
 end
 
--- Update the plugin
+function Plugin:has_updates()
+  return Async.wrap(function(callback)
+    if self.is_dev or not self.is_remote then
+      callback(false)
+      return
+    end
+
+    local path = self:get_path()
+
+    -- get remote repo info
+    vim.system({ 'git', '-C', path, 'remote', 'update' }, {}, function(fetch_res)
+      if fetch_res.code ~= 0 then
+        callback(false)
+        return
+      end
+
+      -- check local
+      vim.system({ 'git', '-C', path, 'status', '-uno' }, {}, function(status_res)
+        if status_res.code ~= 0 then
+          callback(false)
+          return
+        end
+        local behind = status_res.stdout:match('behind') ~= nil
+        callback(behind)
+      end)
+    end)
+  end)()
+end
+
 function Plugin:update()
   if self.is_dev or not self.is_remote then
     return Async.wrap(function(cb)
-      cb(true)
+      cb(true, 'skip')
     end)()
   end
 
   return Async.wrap(function(callback)
-    -- Check if plugin is installed
     local installed = Async.await(self:is_installed())
     if not installed then
-      callback(true)
+      callback(true, 'not_installed')
+      return
+    end
+
+    local has_updates = Async.await(self:has_updates())
+    if not has_updates then
+      self.status = STATUS.UPDATED
+      ui:update_entry(self.name, self.status, 'Already up to date')
+      callback(true, 'up_to_date')
       return
     end
 
@@ -781,6 +816,7 @@ function Plugin:update()
 
     local path = self:get_path()
     local cmd = { 'git', '-C', path, 'pull', '--progress' }
+    local error_msg = nil
 
     local co = coroutine.running()
     vim.system(cmd, {
@@ -796,11 +832,12 @@ function Plugin:update()
         if obj.code == 0 then
           self.status = STATUS.UPDATED
           ui:update_entry(self.name, self.status, 'Update complete')
-          callback(true)
+          callback(true, 'updated')
         else
           self.status = STATUS.ERROR
-          ui:update_entry(self.name, self.status, 'Failed: ' .. (obj.stderr or 'Unknown error'))
-          callback(false)
+          error_msg = obj.stderr or 'Unknown error'
+          ui:update_entry(self.name, self.status, 'Failed: ' .. error_msg)
+          callback(false, error_msg)
         end
       end)
     end)
@@ -816,10 +853,8 @@ function Plugin:update()
       lines = vim.split(lines, '\n', { trimempty = true })
 
       if #lines > 0 then
-        -- Schedule UI updates from coroutine callbacks
-        vim.schedule(function()
-          ui:update_entry(self.name, self.status, lines[#lines])
-        end)
+        -- Update UI with latest progress
+        ui:update_entry(self.name, self.status, lines[#lines])
       end
     end
   end)()
@@ -970,29 +1005,33 @@ function M.install()
   end)()
 end
 
--- Update all plugins
+-- Update all plugins with concurrent operations
 function M.update()
   resolve_dependencies()
 
-  M.log('info', 'Updating plugins...')
+  M.log('info', 'Checking for updates...')
   local plugins_to_update = {}
+
+  local strive_plugin = Plugin.new({
+    name = 'nvimdev/strive',
+    plugin_name = 'strive',
+  })
 
   -- Create update tasks
   Async.async(function()
     -- Find plugins that need updating
-    for _, plugin in
-      ipairs(vim.list_extend(plugins, {
-        name = 'nvimdev/strive',
-        plugin_name = 'nvimdev/strive',
-        is_dev = true,
-      }))
-    do
+    for _, plugin in ipairs(plugins) do
       if plugin.is_remote and not plugin.is_dev then
         local installed = Async.await(plugin:is_installed())
         if installed then
           table.insert(plugins_to_update, plugin)
         end
       end
+    end
+
+    local strive_installed = Async.await(strive_plugin:is_installed())
+    if strive_installed then
+      table.insert(plugins_to_update, strive_plugin)
     end
 
     if #plugins_to_update == 0 then
@@ -1002,24 +1041,52 @@ function M.update()
 
     ui:open()
 
-    for _, plugin in ipairs(plugins_to_update) do
-      task_queue:enqueue(function(done)
-        Async.async(function()
-          Async.await(plugin:update())
-          done()
-        end)()
-      end)
+    local updated_count = 0
+    local skipped_count = 0
+
+    -- Use Async.all for concurrent updates
+    -- But batch them into groups to avoid overloading system
+    local batch_size = DEFAULT_SETTINGS.max_concurrent_tasks
+    local total_batches = math.ceil(#plugins_to_update / batch_size)
+
+    for batch = 1, total_batches do
+      local start_idx = (batch - 1) * batch_size + 1
+      local end_idx = math.min(batch * batch_size, #plugins_to_update)
+      local current_batch = {}
+
+      for i = start_idx, end_idx do
+        local plugin = plugins_to_update[i]
+        table.insert(current_batch, plugin:update())
+      end
+
+      -- Wait for current batch to complete
+      local results = Async.await(Async.all(current_batch))
+
+      for _, result in ipairs(results) do
+        local success, status = unpack(result)
+        if success then
+          if status == 'updated' then
+            updated_count = updated_count + 1
+          elseif status == 'up_to_date' then
+            skipped_count = skipped_count + 1
+          end
+        end
+      end
     end
 
-    -- Set completion callback
-    task_queue:on_complete(function()
-      M.log('info', 'All plugins updated successfully.')
+    if updated_count > 0 then
+      M.log(
+        'info',
+        string.format('Updated %d plugins, %d already up to date.', updated_count, skipped_count)
+      )
+    else
+      M.log('info', 'All plugins already up to date.')
+    end
 
-      -- Close UI after a delay
-      vim.defer_fn(function()
-        ui:close()
-      end, 2000)
-    end)
+    -- Close UI after a delay
+    vim.defer_fn(function()
+      ui:close()
+    end, 2000)
   end)()
 end
 
