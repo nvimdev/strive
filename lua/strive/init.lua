@@ -1,4 +1,4 @@
--- MinPM: Minimalist Plugin Manager for Neovim
+-- Strive: Minimalist Plugin Manager for Neovim
 -- A lightweight, feature-rich plugin manager with support for lazy loading,
 -- dependencies, and asynchronous operations.
 
@@ -13,8 +13,8 @@ local plugin_map = {}
 
 -- Data paths
 local data_dir = vim.fn.stdpath('data')
-local START_DIR = vim.fs.joinpath(data_dir, 'site', 'pack', 'minpm', 'start')
-local OPT_DIR = vim.fs.joinpath(data_dir, 'site', 'pack', 'minpm', 'opt')
+local START_DIR = vim.fs.joinpath(data_dir, 'site', 'pack', 'strive', 'start')
+local OPT_DIR = vim.fs.joinpath(data_dir, 'site', 'pack', 'strive', 'opt')
 
 -- Add to packpath
 vim.opt.packpath:prepend(vim.fs.joinpath(data_dir, 'site'))
@@ -22,10 +22,10 @@ vim.g.pm_loaded = 0
 
 -- Default settings
 local DEFAULT_SETTINGS = {
-  max_concurrent_tasks = if_nil(vim.g.minpm_max_concurrent_tasks, 5),
-  auto_install = if_nil(vim.g.minpm_auto_install, true),
-  log_level = if_nil(vim.g.minpm_log_level, 'info'),
-  git_timeout = if_nil(vim.g.minpm_git_timeout, 60000),
+  max_concurrent_tasks = if_nil(vim.g.strive_max_concurrent_tasks, 5),
+  auto_install = if_nil(vim.g.strive_auto_install, true),
+  log_level = if_nil(vim.g.strive_log_level, 'info'),
+  git_timeout = if_nil(vim.g.strive_git_timeout, 60000),
 }
 
 -- Plugin status constants
@@ -192,7 +192,7 @@ function ProgressWindow.new()
     winid = nil,
     entries = {},
     visible = false,
-    title = 'MinPM Plugin Manager',
+    title = 'Strive Plugin Manager',
   }, ProgressWindow)
 
   return self
@@ -209,7 +209,7 @@ function ProgressWindow:create_buffer()
   vim.bo[self.bufnr].modifiable = false
 
   -- Set buffer name
-  api.nvim_buf_set_name(self.bufnr, 'MinPM-Progress')
+  api.nvim_buf_set_name(self.bufnr, 'strive-Progress')
 
   -- Set key mappings for the buffer
   self:set_keymaps()
@@ -478,7 +478,7 @@ function Plugin:on(events)
   for _, event in ipairs(self.events) do
     api.nvim_create_autocmd(event, {
       group = api.nvim_create_augroup(
-        'minpm_' .. self.plugin_name .. '_' .. event,
+        'strive_' .. self.plugin_name .. '_' .. event,
         { clear = true }
       ),
       once = true,
@@ -509,7 +509,7 @@ function Plugin:ft(filetypes)
   self.is_lazy = true
   self.filetypes = type(filetypes) ~= 'table' and { filetypes } or filetypes
   api.nvim_create_autocmd('FileType', {
-    group = api.nvim_create_augroup('minpm_' .. self.plugin_name .. '_ft', { clear = true }),
+    group = api.nvim_create_augroup('strive_' .. self.plugin_name .. '_ft', { clear = true }),
     pattern = self.filetypes,
     once = true,
     callback = function(args)
@@ -792,7 +792,7 @@ function M.log(level, message)
 
   if levels[level] and levels[level] >= current_level then
     vim.notify(
-      string.format('[minpm] %s', message),
+      string.format('[strive] %s', message),
       level == 'error' and vim.log.levels.ERROR
         or level == 'warn' and vim.log.levels.WARN
         or level == 'info' and vim.log.levels.INFO
@@ -867,7 +867,7 @@ end
 -- Set up auto-install
 local function setup_auto_install()
   api.nvim_create_autocmd('UIEnter', {
-    group = api.nvim_create_augroup('minpm_auto_install', { clear = true }),
+    group = api.nvim_create_augroup('strive_auto_install', { clear = true }),
     callback = function()
       -- We're already in a UIEnter event, so we should be careful about recursion
       -- We want to install plugins but not trigger another UIEnter event
@@ -1051,19 +1051,19 @@ end
 
 -- Create user commands
 local function create_commands()
-  api.nvim_create_user_command('MinPMInstall', function()
+  api.nvim_create_user_command('StriveInstall', function()
     M.install()
   end, {
     desc = 'Install plugins',
   })
 
-  api.nvim_create_user_command('MinPMUpdate', function()
+  api.nvim_create_user_command('StriveUpdate', function()
     M.update()
   end, {
     desc = 'Update plugins',
   })
 
-  api.nvim_create_user_command('MinPMClean', function()
+  api.nvim_create_user_command('StriveClean', function()
     M.clean()
   end, {
     desc = 'Clean unused plugins',
