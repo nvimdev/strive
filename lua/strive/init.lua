@@ -473,16 +473,7 @@ function Plugin:load()
     end
   end
 
-  local module_name = self.plugin_name:gsub('%.nvim$', ''):gsub('-nvim$', ''):gsub('^nvim%-', '')
-  -- Try to load the module
-  local ok, module = pcall(require, module_name)
-  if ok and type(module) == 'table' then
-    local setup = rawget(module, 'setup')
-    if setup and type(setup) == 'function' then
-      setup(self.setup_opts)
-    end
-  end
-
+  self:call_setup()
   load_opts(self.config_opts)
 
   -- Update status
@@ -672,6 +663,28 @@ function Plugin:theme(name)
   return self
 end
 
+function Plugin:call_setup()
+  local module_name = self.plugin_name:gsub('%.nvim$', ''):gsub('-nvim$', ''):gsub('^nvim%-', '')
+  for _, mod in ipairs({ module_name, self.plugin_name }) do
+    -- Try to load the module
+    local ok, module = pcall(require, mod)
+    if ok and type(module) == 'table' then
+      local setup = rawget(module, 'setup')
+      if setup and type(setup) == 'function' then
+        setup(self.setup_opts)
+        break
+      end
+    end
+  end
+end
+
+function Plugin:load_rtp(callback)
+  local path = self:get_path()
+  vim.opt.rtp:append(path)
+  self:call_setup()
+  callback()
+end
+
 function Plugin:build(action)
   assert(type(action) == 'string')
   self.build_action = action
@@ -724,9 +737,13 @@ function Plugin:install()
           if self.colorscheme then
             self:theme(self.colorscheme)
           end
+
           if self.build_action then
-            vim.cmd(self.build_action)
+            self:load_rtp(function()
+              vim.cmd(self.build_action)
+            end)
           end
+
           callback(true)
         else
           self.status = STATUS.ERROR
