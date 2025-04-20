@@ -497,11 +497,17 @@ function Plugin:on(events)
 
   -- Create autocmds for each event
   for _, event in ipairs(self.events) do
+    local pattern
+    if event:find('%s') then
+      local t = vim.split(event, '%s')
+      event, pattern = t[1], t[2]
+    end
     api.nvim_create_autocmd(event, {
       group = api.nvim_create_augroup(
         'strive_' .. self.plugin_name .. '_' .. event,
         { clear = true }
       ),
+      pattern = pattern,
       once = true,
       callback = function(args)
         -- Don't re-emit the event if we've already loaded the plugin
@@ -715,7 +721,11 @@ function Plugin:install()
           callback(true)
         else
           self.status = STATUS.ERROR
-          ui:update_entry(self.name, self.status, 'Failed: ' .. (obj.stderr or 'Unknown error'))
+          ui:update_entry(
+            self.name,
+            self.status,
+            'Failed: ' .. (obj.stderr or 'Unknown error') .. ' code: ' .. obj.code
+          )
           callback(false)
         end
       end)
