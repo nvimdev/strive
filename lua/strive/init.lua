@@ -708,7 +708,7 @@ function Plugin:install()
 
     -- Process progress updates
     while true do
-      local err, data = coroutine.yield()
+      local _, data = coroutine.yield()
       if not data then
         break
       end
@@ -1065,7 +1065,6 @@ function M.clean()
   end
 end
 
--- Create user commands
 local function create_commands()
   local t = { install = 1, update = 2, clean = 3 }
   api.nvim_create_user_command('Strive', function(args)
@@ -1086,7 +1085,5 @@ if DEFAULT_SETTINGS.auto_install then
   setup_auto_install()
 end
 
--- Create commands
 create_commands()
-
 return { use = M.use }
