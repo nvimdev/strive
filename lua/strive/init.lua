@@ -43,10 +43,10 @@ local STATUS = {
 -- =====================================================================
 -- 2. Async Utilities
 -- =====================================================================
-local async = {}
+local Async = {}
 
 -- Wrap a function to return a promise
-function async.wrap(func)
+function Async.wrap(func)
   return function(...)
     local args = { ... }
     return function(callback)
@@ -57,7 +57,7 @@ function async.wrap(func)
 end
 
 -- Await a promise - execution is paused until promise resolves
-function async.await(promise)
+function Async.await(promise)
   local co = coroutine.running()
   if not co then
     error('Cannot await outside of an async function')
@@ -73,7 +73,7 @@ function async.await(promise)
 end
 
 -- Create an async function that can use await
-function async.async(func)
+function Async.async(func)
   return function(...)
     local args = { ... }
     local co = coroutine.create(function()
@@ -92,7 +92,7 @@ function async.async(func)
 end
 
 -- Run multiple promises concurrently and wait for all to complete
-function async.all(promises)
+function Async.all(promises)
   return function(callback)
     if #promises == 0 then
       callback({})
@@ -419,7 +419,7 @@ end
 
 -- Check if plugin is installed (async version)
 function Plugin:is_installed()
-  return async.wrap(function(callback)
+  return Async.wrap(function(callback)
     uv.fs_stat(self:get_path(), function(err, stat)
       callback(not err and stat and stat.type == 'directory')
     end)
@@ -627,8 +627,8 @@ function Plugin:theme(name)
   self.colorscheme = name or self.plugin_name
 
   -- If already installed, apply the theme
-  async.async(function()
-    local installed = async.await(self:is_installed())
+  Async.async(function()
+    local installed = Async.await(self:is_installed())
     if installed then
       vim.schedule(function()
         vim.opt.rtp:append(vim.fs.joinpath(START_DIR, self.plugin_name))
@@ -643,14 +643,14 @@ end
 -- Install the plugin
 function Plugin:install()
   if self.is_dev or not self.is_remote then
-    return async.wrap(function(cb)
+    return Async.wrap(function(cb)
       cb(true)
     end)()
   end
 
-  return async.wrap(function(callback)
+  return Async.wrap(function(callback)
     -- Check if already installed
-    local installed = async.await(self:is_installed())
+    local installed = Async.await(self:is_installed())
     if installed then
       callback(true)
       return
@@ -719,14 +719,14 @@ end
 -- Update the plugin
 function Plugin:update()
   if self.is_dev or not self.is_remote then
-    return async.wrap(function(cb)
+    return Async.wrap(function(cb)
       cb(true)
     end)()
   end
 
-  return async.wrap(function(callback)
+  return Async.wrap(function(callback)
     -- Check if plugin is installed
-    local installed = async.await(self:is_installed())
+    local installed = Async.await(self:is_installed())
     if not installed then
       callback(true)
       return
@@ -887,11 +887,11 @@ function M.install()
   local plugins_to_install = {}
 
   -- Create installation tasks
-  async.async(function()
+  Async.async(function()
     -- Find plugins that need installation
     for _, plugin in ipairs(plugins) do
       if plugin.is_remote and not plugin.is_dev then
-        local installed = async.await(plugin:is_installed())
+        local installed = Async.await(plugin:is_installed())
         if not installed then
           table.insert(plugins_to_install, plugin)
         end
@@ -907,8 +907,8 @@ function M.install()
 
     for _, plugin in ipairs(plugins_to_install) do
       task_queue:enqueue(function(done)
-        async.async(function()
-          async.await(plugin:install())
+        Async.async(function()
+          Async.await(plugin:install())
           done()
         end)()
       end)
@@ -934,11 +934,11 @@ function M.update()
   local plugins_to_update = {}
 
   -- Create update tasks
-  async.async(function()
+  Async.async(function()
     -- Find plugins that need updating
     for _, plugin in ipairs(plugins) do
       if plugin.is_remote and not plugin.is_dev then
-        local installed = async.await(plugin:is_installed())
+        local installed = Async.await(plugin:is_installed())
         if installed then
           table.insert(plugins_to_update, plugin)
         end
@@ -954,8 +954,8 @@ function M.update()
 
     for _, plugin in ipairs(plugins_to_update) do
       task_queue:enqueue(function(done)
-        async.async(function()
-          async.await(plugin:update())
+        Async.async(function()
+          Async.await(plugin:update())
           done()
         end)()
       end)
@@ -975,10 +975,10 @@ end
 
 -- Load all installed plugins
 function M.load_all()
-  async.async(function()
+  Async.async(function()
     for _, plugin in ipairs(plugins) do
       if not plugin.is_lazy then
-        local installed = async.await(plugin:is_installed())
+        local installed = Async.await(plugin:is_installed())
         if installed then
           plugin:load()
         end
@@ -1038,7 +1038,7 @@ function M.clean()
       M.log('info', string.format('Removing %s', path))
 
       -- Use async version of delete
-      async.async(function()
+      Async.async(function()
         vim.fn.delete(path, 'rf')
       end)()
     end
