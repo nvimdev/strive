@@ -773,7 +773,7 @@ function Plugin:update()
 
     -- Process progress updates
     while true do
-      local err, data = coroutine.yield()
+      local _, data = coroutine.yield()
       if not data then
         break
       end
@@ -946,7 +946,13 @@ function M.update()
   -- Create update tasks
   Async.async(function()
     -- Find plugins that need updating
-    for _, plugin in ipairs(plugins) do
+    for _, plugin in
+      ipairs(vim.list_extend(plugins, {
+        name = 'nvimdev/strive',
+        plugin_name = 'nvimdev/strive',
+        is_dev = true,
+      }))
+    do
       if plugin.is_remote and not plugin.is_dev then
         local installed = Async.await(plugin:is_installed())
         if installed then
@@ -1061,22 +1067,17 @@ end
 
 -- Create user commands
 local function create_commands()
-  api.nvim_create_user_command('StriveInstall', function()
-    M.install()
+  local t = { install = 1, update = 2, clean = 3 }
+  api.nvim_create_user_command('Strive', function(args)
+    if t[args.args] then
+      M[args.args]()
+    end
   end, {
     desc = 'Install plugins',
-  })
-
-  api.nvim_create_user_command('StriveUpdate', function()
-    M.update()
-  end, {
-    desc = 'Update plugins',
-  })
-
-  api.nvim_create_user_command('StriveClean', function()
-    M.clean()
-  end, {
-    desc = 'Clean unused plugins',
+    nargs = '+',
+    complete = function()
+      return vim.tbl_keys(t)
+    end,
   })
 end
 
