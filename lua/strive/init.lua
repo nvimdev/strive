@@ -409,6 +409,7 @@ function Plugin.new(spec)
     dependencies = spec.depends or {}, -- Dependencies
 
     user_commands = {}, -- Created user commands
+    build = spec.build or nil,
   }, Plugin)
 
   return self
@@ -671,6 +672,12 @@ function Plugin:theme(name)
   return self
 end
 
+function Plugin:build(action)
+  assert(type(action) ~= 'string')
+  self.build = action
+  return self
+end
+
 -- Install the plugin
 function Plugin:install()
   if self.is_dev or not self.is_remote then
@@ -717,7 +724,9 @@ function Plugin:install()
           if self.colorscheme then
             self:theme(self.colorscheme)
           end
-
+          if self.build then
+            vim.cmd(self.build)
+          end
           callback(true)
         else
           self.status = STATUS.ERROR
