@@ -400,7 +400,8 @@ function Plugin.new(spec)
 
     -- Configuration
     setup_opts = spec.setup or {}, -- Options for plugin setup()
-    config_fn = spec.config, -- Config function to run after loading
+    init_opts = spec.init, -- Options for before load plugin
+    config_opts = spec.config, -- Config function to run after loading
     after_fn = spec.after, -- Function to run after dependencies load
     colorscheme = spec.theme, -- Theme to apply if this is a colorscheme
 
@@ -450,6 +451,18 @@ function Plugin:load()
   self.loaded = true
   vim.g.pm_loaded = vim.g.pm_loaded + 1
 
+  local function load_opts(opt)
+    if opt then
+      if type(opt) == 'string' then
+        vim.cmd(opt)
+      elseif type(opt) == 'function' then
+        opt()
+      end
+    end
+  end
+
+  load_opts(self.init_opts)
+
   -- If it's a lazy-loaded plugin, add it
   if self.is_lazy then
     if not self.is_dev then
@@ -469,10 +482,8 @@ function Plugin:load()
     end
   end
 
-  -- Run config function if provided
-  if type(self.config_fn) == 'function' then
-    self.config_fn()
-  end
+  load_opts(self.config_opts)
+
   -- Update status
   self.status = STATUS.LOADED
 
@@ -618,10 +629,14 @@ function Plugin:setup(opts)
   return self
 end
 
+function Plugin:init(opts)
+  self.init_opts = opts
+  return self
+end
+
 -- Set a function to run after plugin loads
-function Plugin:config(fn)
-  assert(type(fn) == 'function', 'Config must be a function')
-  self.config_fn = fn
+function Plugin:config(opts)
+  self.config_opts = opts
   return self
 end
 
