@@ -2,7 +2,7 @@
 -- A lightweight, feature-rich plugin manager with support for lazy loading,
 -- dependencies, and asynchronous operations.
 
-local api, uv, if_nil = vim.api, vim.uv, vim.F.if_nil
+local api, uv, if_nil, Iter = vim.api, vim.uv, vim.F.if_nil, vim.iter
 
 -- =====================================================================
 -- 1. Configuration and Constants
@@ -391,6 +391,7 @@ function Plugin.new(spec)
   local plugin_name = parts[#parts]:gsub('%.git$', '')
 
   local self = setmetatable({
+    id = 0,
     -- Basic properties
     name = name, -- Full repo name (user/repo)
     plugin_name = plugin_name, -- Just the repo part (for loading)
@@ -443,16 +444,35 @@ function Plugin:is_installed()
   end)()
 end
 
+local function load_opts(opt)
+  if opt then
+    if type(opt) == 'string' then
+      vim.cmd(opt)
+    elseif type(opt) == 'function' then
+      opt()
+    end
+  end
+end
+
+function Plugin:packadd()
+  -- If it's a lazy-loaded plugin, add it
+  if self.is_lazy then
+    if not self.is_dev then
+      vim.cmd.packadd(self.plugin_name)
+    else
+      vim.opt.rtp:append(self:get_path())
+    end
+  end
+end
+
 -- Load a plugin and its dependencies
 function Plugin:load()
   if self.loaded then
     return true
   end
 
-  local path = self:get_path()
-
   -- Check if plugin exists
-  local stat = uv.fs_stat(path)
+  local stat = uv.fs_stat(self:get_path())
   if not stat or stat.type ~= 'directory' then
     return false
   end
@@ -462,26 +482,15 @@ function Plugin:load()
   self.loaded = true
   vim.g.pm_loaded = vim.g.pm_loaded + 1
 
-  local function load_opts(opt)
-    if opt then
-      if type(opt) == 'string' then
-        vim.cmd(opt)
-      elseif type(opt) == 'function' then
-        opt()
-      end
+  Iter(self.dependencies):map(function(d)
+    if not d.loaded then
+      d:load()
     end
-  end
+  end)
 
   load_opts(self.init_opts)
 
-  -- If it's a lazy-loaded plugin, add it
-  if self.is_lazy then
-    if not self.is_dev then
-      vim.cmd.packadd(self.plugin_name)
-    else
-      vim.opt.rtp:append(path)
-    end
-  end
+  self:packadd()
 
   self:call_setup()
   load_opts(self.config_opts)
@@ -701,6 +710,20 @@ function Plugin:build(action)
   return self
 end
 
+-- Add dependency to a plugin
+function Plugin:depends(deps)
+  deps = type(deps) == 'string' and { deps } or deps
+  -- Extend the current dependencies
+  for _, dep in ipairs(deps) do
+    if not plugins[dep] then
+      local d = M.use(dep)
+      d.is_lazy = true
+      table.insert(self.dependencies, d)
+    end
+  end
+  return self
+end
+
 -- Install the plugin
 function Plugin:install()
   if self.is_dev or not self.is_remote then
@@ -710,7 +733,6 @@ function Plugin:install()
   end
 
   return Async.wrap(function(callback)
-    print(callback)
     -- Check if already installed
     local installed = Async.await(self:is_installed())
     if installed then
@@ -737,18 +759,17 @@ function Plugin:install()
         end
       end,
     }, function(obj)
-      callback(obj.code == 0)
+      local ok = obj.code == 0
+      self.status = ok and STATUS.INSTALLED or STATUS.ERROR
+      callback(ok)
       vim.schedule(function()
         if obj.code == 0 then
-          self.status = STATUS.INSTALLED
           ui:update_entry(self.name, self.status, 'Installation complete')
-
           -- Apply colorscheme if this is a theme
           -- Make sure the plugin is loaded first
           if self.colorscheme then
             self:theme(self.colorscheme)
           end
-
           if self.build_action then
             self:load_rtp(function()
               vim.cmd(self.build_action)
@@ -762,6 +783,7 @@ function Plugin:install()
             'Failed: ' .. (obj.stderr or 'Unknown error') .. ' code: ' .. obj.code
           )
         end
+        callback(ok)
       end)
     end)
 
@@ -914,7 +936,7 @@ function M.use(spec)
     M.log('warn', string.format('Plugin %s is already registered, skipping duplicate', plugin.name))
     return plugin_map[plugin.name]
   end
-
+  plugin.id = #plugins + 1
   -- Add to collections
   table.insert(plugins, plugin)
   plugin_map[plugin.name] = plugin
@@ -925,47 +947,6 @@ end
 -- Get plugin from registry
 function M.get_plugin(name)
   return plugin_map[name]
-end
-
--- Process dependencies for all plugins
-local function resolve_dependencies()
-  local resolved = {}
-  local function resolve_plugin(name, chain)
-    if resolved[name] then
-      return true
-    end
-
-    -- Detect circular dependencies
-    chain = chain or {}
-    if vim.tbl_contains(chain, name) then
-      local cycle = table.concat(chain, ' -> ') .. ' -> ' .. name
-      M.log('error', 'Circular dependency detected: ' .. cycle)
-      return false
-    end
-
-    -- Get the plugin
-    local plugin = plugin_map[name]
-    if not plugin then
-      -- Auto-register missing dependency
-      plugin = M.use(name)
-    end
-
-    -- Resolve dependencies first
-    local new_chain = vim.list_extend({}, chain)
-    table.insert(new_chain, name)
-
-    for _, dep_name in ipairs(plugin.dependencies) do
-      resolve_plugin(dep_name, new_chain)
-    end
-
-    resolved[name] = true
-    return true
-  end
-
-  -- Resolve each plugin
-  for name, _ in pairs(plugin_map) do
-    resolve_plugin(name)
-  end
 end
 
 -- Set up auto-install
@@ -986,8 +967,6 @@ end
 
 -- Install all plugins
 function M.install()
-  resolve_dependencies()
-
   local plugins_to_install = {}
 
   -- Create installation tasks
@@ -1032,8 +1011,6 @@ end
 
 -- Update all plugins with concurrent operations
 function M.update()
-  resolve_dependencies()
-
   M.log('info', 'Checking for updates...')
   local plugins_to_update = {}
 
