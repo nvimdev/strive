@@ -24,7 +24,7 @@ vim.g.pm_loaded = 0
 local DEFAULT_SETTINGS = {
   max_concurrent_tasks = if_nil(vim.g.strive_max_concurrent_tasks, 5),
   auto_install = if_nil(vim.g.strive_auto_install, true),
-  log_level = if_nil(vim.g.strive_log_level, 'info'),
+  log_level = if_nil(vim.g.strive_log_level, 'warn'),
   git_timeout = if_nil(vim.g.strive_git_timeout, 60000),
   install_retry = if_nil(vim.g.strive_install_with_retry, false),
 }
@@ -1324,7 +1324,7 @@ function M.update()
     end
 
     if #plugins_to_update == 0 then
-      M.log('info', 'No plugins to update.')
+      M.log('debug', 'No plugins to update.')
       return
     end
 
