@@ -582,7 +582,7 @@ function Plugin.new(spec)
     keys = {}, -- Keys to trigger loading
 
     -- Configuration
-    setup_opts = spec.setup or {}, -- Options for plugin setup()
+    setup_opts = spec.setup or nil, -- Options for plugin setup()
     init_opts = spec.init, -- Options for before load plugin
     config_opts = spec.config, -- Config function to run after loading
     after_fn = spec.after, -- Function to run after dependencies load
@@ -664,7 +664,10 @@ function Plugin:load()
 
   self:packadd()
 
-  self:call_setup()
+  if self.setup_opts then
+    self:call_setup()
+  end
+
   load_opts(self.config_opts)
 
   -- Update status
