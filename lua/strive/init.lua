@@ -2,7 +2,7 @@
 -- A lightweight, feature-rich plugin manager with support for lazy loading,
 -- dependencies, and asynchronous operations.
 
-local api, uv, if_nil, Iter = vim.api, vim.uv, vim.F.if_nil, vim.iter
+local api, uv, if_nil, Iter, ffi = vim.api, vim.uv, vim.F.if_nil, vim.iter, require('ffi')
 
 -- =====================================================================
 -- 1. Configuration and Constants
@@ -18,9 +18,8 @@ local OPT_DIR = vim.fs.joinpath(data_dir, 'site', 'pack', 'strive', 'opt')
 
 -- Add to packpath
 vim.opt.packpath:prepend(vim.fs.joinpath(data_dir, 'site'))
-vim.g.pm_loaded = 0
+vim.g.strim_loaded = 0
 
--- Default settings
 local DEFAULT_SETTINGS = {
   max_concurrent_tasks = if_nil(vim.g.strive_max_concurrent_tasks, 5),
   auto_install = if_nil(vim.g.strive_auto_install, true),
@@ -653,7 +652,7 @@ function Plugin:load()
   -- Prevent recursive loading
   -- Set loaded to true before actual loading to prevent infinite loops
   self.loaded = true
-  vim.g.pm_loaded = vim.g.pm_loaded + 1
+  vim.g.strim_loaded = vim.g.strim_loaded + 1
 
   Iter(self.dependencies):map(function(d)
     if not d.loaded then
@@ -695,7 +694,7 @@ function Plugin:on(events)
       once = true,
       callback = function(args)
         -- Don't re-emit the event if we've already loaded the plugin
-        if not self.loaded and self:load() then
+        if not self.loaded and self:load() and args.event == 'FileType' then
           -- We need to re-emit the event, but carefully to avoid nesting too deep
           -- Instead of exec_autocmds, trigger the event using a different mechanism
           local event_data = args.data and vim.deepcopy(args.data) or {}
@@ -1485,4 +1484,28 @@ if DEFAULT_SETTINGS.auto_install then
 end
 
 create_commands()
+
+ffi.cdef([[
+  typedef long time_t;
+  typedef int clockid_t;
+  typedef struct timespec {
+    time_t   tv_sec;
+    long     tv_nsec;
+  } timespec;
+  int clock_gettime(clockid_t clk_id, struct timespec *tp);
+]])
+local CLOCK_PROCESS_CPUTIME_ID = vim.uv.os_uname().sysname:match('Darwin') and 12 or 2
+
+api.nvim_create_autocmd('UIEnter', {
+  callback = function()
+    if vim.g.strive_startup_time ~= nil then
+      return
+    end
+
+    local t = assert(ffi.new('timespec[?]', 1))
+    ffi.C.clock_gettime(CLOCK_PROCESS_CPUTIME_ID, t)
+    vim.g.strive_startup_time = tonumber(t[0].tv_sec) * 1e3 + tonumber(t[0].tv_nsec) / 1e6
+  end,
+})
+
 return { use = M.use }
