@@ -24,8 +24,9 @@ vim.g.pm_loaded = 0
 local DEFAULT_SETTINGS = {
   max_concurrent_tasks = if_nil(vim.g.strive_max_concurrent_tasks, 5),
   auto_install = if_nil(vim.g.strive_auto_install, true),
-  log_level = if_nil(vim.g.strive_log_level, 'debug'),
+  log_level = if_nil(vim.g.strive_log_level, 'info'),
   git_timeout = if_nil(vim.g.strive_git_timeout, 60000),
+  install_retry = if_nil(vim.g.strive_install_with_retry, false),
 }
 
 -- Plugin status constants
@@ -45,14 +46,95 @@ local STATUS = {
 -- =====================================================================
 local Async = {}
 
+-- Result type to handle errors properly
+local Result = {}
+Result.__index = Result
+
+function Result.success(value)
+  return setmetatable({ success = true, value = value, error = nil }, Result)
+end
+
+function Result.failure(err)
+  return setmetatable({ success = false, value = nil, error = err }, Result)
+end
+
 -- Wrap a function to return a promise
 function Async.wrap(func)
   return function(...)
     local args = { ... }
     return function(callback)
-      table.insert(args, callback)
-      func(unpack(args))
+      local function handle_result(...)
+        local results = { ... }
+        if #results == 0 then
+          -- No results
+          callback(Result.success(nil))
+        elseif #results == 1 then
+          -- Single result
+          callback(Result.success(results[1]))
+        else
+          -- Multiple results
+          callback(Result.success(results))
+        end
+      end
+
+      -- Handle any errors in the wrapped function
+      local status, err = pcall(function()
+        table.insert(args, handle_result)
+        func(unpack(args))
+      end)
+
+      if not status then
+        callback(Result.failure(err))
+      end
     end
+  end
+end
+
+-- Wrap vim.system to provide better error handling and cleaner usage
+function Async.system(cmd, opts)
+  opts = opts or {}
+  return function(callback)
+    local progress_data = {}
+    local error_data = {}
+    local stderr_callback = opts.stderr
+
+    -- Setup options
+    local system_opts = vim.deepcopy(opts)
+
+    -- Capture stderr for progress if requested
+    if stderr_callback then
+      system_opts.stderr = function(_, data)
+        if data then
+          table.insert(error_data, data)
+          stderr_callback(_, data)
+        end
+      end
+    end
+
+    -- Call vim.system with proper error handling
+    vim.system(cmd, system_opts, function(obj)
+      -- Success is 0 exit code
+      local success = obj.code == 0
+
+      if success then
+        callback(Result.success({
+          stdout = obj.stdout,
+          stderr = obj.stderr,
+          code = obj.code,
+          signal = obj.signal,
+          progress = progress_data,
+        }))
+      else
+        callback(Result.failure({
+          message = 'Command failed with exit code: ' .. obj.code,
+          stdout = obj.stdout,
+          stderr = obj.stderr,
+          code = obj.code,
+          signal = obj.signal,
+          progress = progress_data,
+        }))
+      end
+    end)
   end
 end
 
@@ -63,12 +145,41 @@ function Async.await(promise)
     error('Cannot await outside of an async function')
   end
 
-  promise(function(...)
-    local args = { ... }
+  promise(function(result)
     vim.schedule(function()
-      assert(coroutine.resume(co, unpack(args)))
+      local ok = coroutine.resume(co, result)
+      if not ok then
+        vim.notify(debug.traceback(co), vim.log.levels.ERROR)
+      end
     end)
   end)
+
+  local result = coroutine.yield()
+
+  -- Propagate errors by throwing them
+  if not result.success then
+    error(result.error)
+  end
+
+  return result.value
+end
+
+-- Safely await a promise, returning a result instead of throwing
+function Async.try_await(promise)
+  local co = coroutine.running()
+  if not co then
+    error('Cannot await outside of an async function')
+  end
+
+  promise(function(result)
+    vim.schedule(function()
+      local ok = coroutine.resume(co, result)
+      if not ok then
+        vim.notify(debug.traceback(co), vim.log.levels.ERROR)
+      end
+    end)
+  end)
+
   return coroutine.yield()
 end
 
@@ -77,13 +188,25 @@ function Async.async(func)
   return function(...)
     local args = { ... }
     local co = coroutine.create(function()
-      func(unpack(args))
+      local status, result = pcall(function()
+        return func(unpack(args))
+      end)
+
+      if not status then
+        vim.schedule(function()
+          vim.notify('Async error: ' .. tostring(result), vim.log.levels.ERROR)
+        end)
+      end
+
+      return status and result or nil
     end)
 
     local function step(...)
       local ok, err = coroutine.resume(co, ...)
       if not ok then
-        error(debug.traceback(co, err))
+        vim.schedule(function()
+          vim.notify('Coroutine error: ' .. debug.traceback(co, err), vim.log.levels.ERROR)
+        end)
       end
     end
 
@@ -95,23 +218,74 @@ end
 function Async.all(promises)
   return function(callback)
     if #promises == 0 then
-      callback({})
+      callback(Result.success({}))
       return
     end
 
     local results = {}
     local completed = 0
+    local had_errors = false
+    local first_error = nil
 
     for i, promise in ipairs(promises) do
-      promise(function(...)
-        results[i] = { ... }
+      promise(function(result)
+        results[i] = result
         completed = completed + 1
 
+        -- Keep track of first error
+        if not result.success and not had_errors then
+          had_errors = true
+          first_error = result.error
+        end
+
         if completed == #promises then
-          callback(results)
+          if had_errors then
+            callback(Result.failure(first_error))
+          else
+            -- Extract values from results
+            local values = {}
+            for j, res in ipairs(results) do
+              values[j] = res.value
+            end
+            callback(Result.success(values))
+          end
         end
       end)
     end
+  end
+end
+
+-- Simple delay function (sleep)
+function Async.delay(ms)
+  return function(callback)
+    vim.defer_fn(function()
+      callback(Result.success(nil))
+    end, ms)
+  end
+end
+
+-- Retry a promise with exponential backoff
+function Async.retry(promise_fn, max_retries, initial_delay)
+  max_retries = max_retries or 3
+  initial_delay = initial_delay or 100
+
+  return function(callback)
+    local attempt = 0
+
+    local function try()
+      attempt = attempt + 1
+      promise_fn()(function(result)
+        if result.success or attempt >= max_retries then
+          callback(result)
+        else
+          -- Exponential backoff
+          local delay = initial_delay * (2 ^ (attempt - 1))
+          vim.defer_fn(try, delay)
+        end
+      end)
+    end
+
+    try()
   end
 end
 
@@ -139,10 +313,9 @@ function TaskQueue:process()
     'debug',
     string.format('TaskQueue status: %d queued, %d active', #self.queue, self.active_tasks)
   )
-  print(vim.inspect(self.queue))
 
   if #self.queue == 0 and self.active_tasks == 0 and self.on_empty then
-    M.log('info', 'All tasks completed, calling on_empty callback')
+    M.log('debug', 'All tasks completed, calling on_empty callback')
     self.on_empty()
     return
   end
@@ -733,6 +906,190 @@ function Plugin:install()
   end
 
   return Async.wrap(function(callback)
+    -- Try to install with proper error handling
+    local path = self:get_path()
+    local url = ('https://github.com/%s'):format(self.name)
+    local cmd = { 'git', 'clone', '--progress', url, path }
+
+    -- Ensure parent directory exists
+    vim.fn.mkdir(vim.fs.dirname(path), 'p')
+
+    -- Update status
+    self.status = STATUS.INSTALLING
+    ui:update_entry(self.name, self.status, 'Starting installation...')
+
+    -- Use our new Async.system wrapper
+    local result = Async.try_await(Async.system(cmd, {
+      timeout = DEFAULT_SETTINGS.git_timeout,
+      stderr = function(_, data)
+        if data then
+          -- Update progress in UI
+          local lines = data:gsub('\r', '\n'):gsub('\n+', '\n')
+          lines = vim.split(lines, '\n', { trimempty = true })
+
+          if #lines > 0 then
+            vim.schedule(function()
+              ui:update_entry(self.name, self.status, lines[#lines])
+            end)
+          end
+        end
+      end,
+    }))
+
+    if result.success then
+      self.status = STATUS.INSTALLED
+      ui:update_entry(self.name, self.status, 'Installation complete')
+
+      -- Apply colorscheme if this is a theme
+      if self.colorscheme then
+        self:theme(self.colorscheme)
+      end
+
+      -- Run build command if specified
+      if self.build_action then
+        self:load_rtp(function()
+          vim.cmd(self.build_action)
+        end)
+      end
+    else
+      self.status = STATUS.ERROR
+      ui:update_entry(
+        self.name,
+        self.status,
+        'Failed: ' .. (result.error.stderr or 'Unknown error') .. ' code: ' .. result.error.code
+      )
+    end
+    callback(result.success)
+  end)()
+end
+
+function Plugin:has_updates()
+  return Async.wrap(function(callback)
+    if self.is_dev or not self.is_remote then
+      callback(false)
+      return
+    end
+
+    local path = self:get_path()
+    local fetch_result =
+      Async.try_await(Async.system({ 'git', '-C', self:get_path(), 'remote', 'update' }))
+    if not fetch_result.success then
+      callback(false)
+      return
+    end
+    -- Check local status
+    local status_result = Async.try_await(Async.system({ 'git', '-C', path, 'status', '-uno' }))
+    if not status_result.success then
+      callback(false)
+      return
+    end
+
+    local stdout = status_result.value.stdout
+    local behind = stdout:match('behind') ~= nil
+    callback(behind)
+  end)()
+end
+
+function Plugin:update()
+  if self.is_dev or not self.is_remote then
+    return Async.wrap(function(cb)
+      cb(true, 'skip')
+    end)()
+  end
+
+  return Async.wrap(function(callback)
+    local installed
+    local install_result = Async.try_await(self:is_installed())
+
+    if install_result.success then
+      installed = install_result.value
+    else
+      self.status = STATUS.ERROR
+      ui:update_entry(
+        self.name,
+        self.status,
+        'Error checking installation: ' .. tostring(install_result.error)
+      )
+      callback(false, 'error_checking')
+      return
+    end
+
+    if not installed then
+      callback(true, 'not_installed')
+      return
+    end
+
+    -- Check for updates
+    local updates_result = Async.try_await(self:has_updates())
+    local has_updates
+
+    if updates_result.success then
+      has_updates = updates_result.value
+    else
+      self.status = STATUS.ERROR
+      ui:update_entry(
+        self.name,
+        self.status,
+        'Error checking updates: ' .. tostring(updates_result.error)
+      )
+      callback(false, 'error_checking_updates')
+      return
+    end
+
+    if not has_updates then
+      self.status = STATUS.UPDATED
+      ui:update_entry(self.name, self.status, 'Already up to date')
+      callback(true, 'up_to_date')
+      return
+    end
+
+    -- Update the plugin
+    self.status = STATUS.UPDATING
+    ui:update_entry(self.name, self.status, 'Starting update...')
+
+    local path = self:get_path()
+    local cmd = { 'git', '-C', path, 'pull', '--progress' }
+
+    -- Use our new Async.system wrapper
+    local result = Async.try_await(Async.system(cmd, {
+      timeout = DEFAULT_SETTINGS.git_timeout,
+      stderr = function(_, data)
+        if data then
+          -- Update progress in UI
+          local lines = data:gsub('\r', '\n'):gsub('\n+', '\n')
+          lines = vim.split(lines, '\n', { trimempty = true })
+
+          if #lines > 0 then
+            vim.schedule(function()
+              ui:update_entry(self.name, self.status, lines[#lines])
+            end)
+          end
+        end
+      end,
+    }))
+
+    -- Handle result
+    if result.success then
+      self.status = STATUS.UPDATED
+      ui:update_entry(self.name, self.status, 'Update complete')
+      callback(true, 'updated')
+    else
+      self.status = STATUS.ERROR
+      local error_msg = result.error.stderr or 'Unknown error'
+      ui:update_entry(self.name, self.status, 'Failed: ' .. error_msg)
+      callback(false, error_msg)
+    end
+  end)()
+end
+
+function Plugin:install_with_retry()
+  if self.is_dev or not self.is_remote then
+    return Async.wrap(function(cb)
+      cb(true)
+    end)()
+  end
+
+  return Async.wrap(function(callback)
     -- Check if already installed
     local installed = Async.await(self:is_installed())
     if installed then
@@ -750,160 +1107,54 @@ function Plugin:install()
     -- Ensure parent directory exists
     vim.fn.mkdir(vim.fs.dirname(path), 'p')
 
-    local co = coroutine.running()
-    vim.system(cmd, {
-      timeout = DEFAULT_SETTINGS.git_timeout,
-      stderr = function(_, data)
-        if data and co then
-          coroutine.resume(co, nil, data)
-        end
-      end,
-    }, function(obj)
-      local ok = obj.code == 0
-      self.status = ok and STATUS.INSTALLED or STATUS.ERROR
-      callback(ok)
-      vim.schedule(function()
-        if obj.code == 0 then
-          ui:update_entry(self.name, self.status, 'Installation complete')
-          -- Apply colorscheme if this is a theme
-          -- Make sure the plugin is loaded first
-          if self.colorscheme then
-            self:theme(self.colorscheme)
-          end
-          if self.build_action then
-            self:load_rtp(function()
-              vim.cmd(self.build_action)
-            end)
-          end
-        else
-          self.status = STATUS.ERROR
-          ui:update_entry(
-            self.name,
-            self.status,
-            'Failed: ' .. (obj.stderr or 'Unknown error') .. ' code: ' .. obj.code
-          )
-        end
-        callback(ok)
-      end)
-    end)
+    -- Use retry with the system command (3 retries with exponential backoff)
+    local result = Async.try_await(Async.retry(function()
+      return Async.system(cmd, {
+        timeout = DEFAULT_SETTINGS.git_timeout,
+        stderr = function(_, data)
+          if data then
+            -- Update progress in UI
+            local lines = data:gsub('\r', '\n'):gsub('\n+', '\n')
+            lines = vim.split(lines, '\n', { trimempty = true })
 
-    -- Process progress updates
-    while true do
-      local _, data = coroutine.yield()
-      if not data then
-        break
+            if #lines > 0 then
+              vim.schedule(function()
+                ui:update_entry(self.name, self.status, lines[#lines])
+              end)
+            end
+          end
+        end,
+      })
+    end, 3, 1000)) -- 3 retries, starting with 1000ms delay
+
+    -- Handle result
+    if result.success then
+      self.status = STATUS.INSTALLED
+      ui:update_entry(self.name, self.status, 'Installation complete')
+
+      -- Apply colorscheme if this is a theme
+      if self.colorscheme then
+        self:theme(self.colorscheme)
       end
 
-      local lines = data:gsub('\r', '\n'):gsub('\n+', '\n')
-      lines = vim.split(lines, '\n', { trimempty = true })
-
-      if #lines > 0 then
-        -- Schedule UI updates from coroutine callbacks
-        vim.schedule(function()
-          ui:update_entry(self.name, self.status, lines[#lines])
+      -- Run build command if specified
+      if self.build_action then
+        self:load_rtp(function()
+          vim.cmd(self.build_action)
         end)
       end
+    else
+      self.status = STATUS.ERROR
+      ui:update_entry(
+        self.name,
+        self.status,
+        'Failed after retries: '
+          .. (result.error.stderr or 'Unknown error')
+          .. ' code: '
+          .. result.error.code
+      )
     end
-  end)()
-end
-
-function Plugin:has_updates()
-  return Async.wrap(function(callback)
-    if self.is_dev or not self.is_remote then
-      callback(false)
-      return
-    end
-
-    local path = self:get_path()
-
-    -- get remote repo info
-    vim.system({ 'git', '-C', path, 'remote', 'update' }, {}, function(fetch_res)
-      if fetch_res.code ~= 0 then
-        callback(false)
-        return
-      end
-
-      -- check local
-      vim.system({ 'git', '-C', path, 'status', '-uno' }, {}, function(status_res)
-        if status_res.code ~= 0 then
-          callback(false)
-          return
-        end
-        local behind = status_res.stdout:match('behind') ~= nil
-        callback(behind)
-      end)
-    end)
-  end)()
-end
-
-function Plugin:update()
-  if self.is_dev or not self.is_remote then
-    return Async.wrap(function(cb)
-      cb(true, 'skip')
-    end)()
-  end
-
-  return Async.wrap(function(callback)
-    local installed = Async.await(self:is_installed())
-    if not installed then
-      callback(true, 'not_installed')
-      return
-    end
-
-    local has_updates = Async.await(self:has_updates())
-    if not has_updates then
-      self.status = STATUS.UPDATED
-      ui:update_entry(self.name, self.status, 'Already up to date')
-      callback(true, 'up_to_date')
-      return
-    end
-
-    self.status = STATUS.UPDATING
-    ui:update_entry(self.name, self.status, 'Starting update...')
-
-    local path = self:get_path()
-    local cmd = { 'git', '-C', path, 'pull', '--progress' }
-    local error_msg = nil
-
-    local co = coroutine.running()
-    vim.system(cmd, {
-      timeout = DEFAULT_SETTINGS.git_timeout,
-      stderr = function(_, data)
-        if data and co then
-          coroutine.resume(co, nil, data)
-        end
-      end,
-    }, function(obj)
-      -- Use schedule for UI updates in callbacks
-      vim.schedule(function()
-        if obj.code == 0 then
-          self.status = STATUS.UPDATED
-          ui:update_entry(self.name, self.status, 'Update complete')
-          callback(true, 'updated')
-        else
-          self.status = STATUS.ERROR
-          error_msg = obj.stderr or 'Unknown error'
-          ui:update_entry(self.name, self.status, 'Failed: ' .. error_msg)
-          callback(false, error_msg)
-        end
-      end)
-    end)
-
-    -- Process progress updates
-    while true do
-      local _, data = coroutine.yield()
-      if not data then
-        break
-      end
-
-      local lines = data:gsub('\r', '\n'):gsub('\n+', '\n')
-      lines = vim.split(lines, '\n', { trimempty = true })
-
-      if #lines > 0 then
-        -- Update UI with latest progress
-        ui:update_entry(self.name, self.status, lines[#lines])
-      end
-    end
+    callback(result.success)
   end)()
 end
 
@@ -967,72 +1218,108 @@ end
 
 -- Install all plugins
 function M.install()
-  local plugins_to_install = {}
-
-  -- Create installation tasks
   Async.async(function()
+    local plugins_to_install = {}
+
     -- Find plugins that need installation
     for _, plugin in ipairs(plugins) do
       if plugin.is_remote and not plugin.is_dev then
-        local installed = Async.await(plugin:is_installed())
-        if not installed then
+        local result = Async.try_await(plugin:is_installed())
+
+        if result.success and not result.value then
           table.insert(plugins_to_install, plugin)
+        elseif not result.success then
+          M.log(
+            'error',
+            string.format(
+              'Error checking if %s is installed: %s',
+              plugin.name,
+              tostring(result.error)
+            )
+          )
         end
       end
     end
 
     if #plugins_to_install == 0 then
+      M.log('info', 'No plugins to install.')
       return
     end
 
-    M.log('info', 'Installing plugins...')
+    M.log('info', string.format('Installing %d plugins...', #plugins_to_install))
     ui:open()
 
+    -- Create installation tasks with proper error handling
+    local install_tasks = {}
     for _, plugin in ipairs(plugins_to_install) do
-      task_queue:enqueue(function(done)
+      table.insert(install_tasks, function(done)
         Async.async(function()
-          Async.await(plugin:install())
+          local result = Async.try_await(
+            DEFAULT_SETTINGS.install_retry and Plugin:install_with_retry() or plugin:install()
+          )
+          if not result.success then
+            M.log(
+              'error',
+              string.format('Failed to install %s: %s', plugin.name, tostring(result.error))
+            )
+          end
+
           done()
         end)()
       end)
     end
 
+    -- Queue all tasks
+    for _, task in ipairs(install_tasks) do
+      task_queue:enqueue(task)
+    end
+
     -- Set completion callback
     task_queue:on_complete(function()
-      M.log('info', 'All plugins installed successfully.')
+      M.log('info', 'Installation completed.')
 
       -- Close UI after a delay
-      vim.defer_fn(function()
-        ui:close()
-      end, 2000)
+      Async.await(Async.delay(2000))
+      ui:close()
     end)
   end)()
 end
 
 -- Update all plugins with concurrent operations
 function M.update()
-  M.log('info', 'Checking for updates...')
-  local plugins_to_update = {}
-
-  local strive_plugin = Plugin.new({
-    name = 'nvimdev/strive',
-    plugin_name = 'strive',
-  })
-
-  -- Create update tasks
   Async.async(function()
-    -- Find plugins that need updating
+    M.log('info', 'Checking for updates...')
+    local plugins_to_update = {}
+
+    -- Add Strive plugin itself to the update list
+    local strive_plugin = Plugin.new({
+      name = 'nvimdev/strive',
+      plugin_name = 'strive',
+    })
+
+    -- Find plugins that need updating with proper error handling
     for _, plugin in ipairs(plugins) do
       if plugin.is_remote and not plugin.is_dev then
-        local installed = Async.await(plugin:is_installed())
-        if installed then
+        local result = Async.try_await(plugin:is_installed())
+
+        if result.success and result.value then
           table.insert(plugins_to_update, plugin)
+        elseif not result.success then
+          M.log(
+            'error',
+            string.format(
+              'Error checking if %s is installed: %s',
+              plugin.name,
+              tostring(result.error)
+            )
+          )
         end
       end
     end
 
-    local strive_installed = Async.await(strive_plugin:is_installed())
-    if strive_installed then
+    -- Check if Strive itself is installed
+    local strive_result = Async.try_await(strive_plugin:is_installed())
+    if strive_result.success and strive_result.value then
       table.insert(plugins_to_update, strive_plugin)
     end
 
@@ -1045,9 +1332,9 @@ function M.update()
 
     local updated_count = 0
     local skipped_count = 0
+    local error_count = 0
 
-    -- Use Async.all for concurrent updates
-    -- But batch them into groups to avoid overloading system
+    -- Update plugins in batches for better control and error handling
     local batch_size = DEFAULT_SETTINGS.max_concurrent_tasks
     local total_batches = math.ceil(#plugins_to_update / batch_size)
 
@@ -1061,111 +1348,120 @@ function M.update()
         table.insert(current_batch, plugin:update())
       end
 
-      -- Wait for current batch to complete
-      local results = Async.await(Async.all(current_batch))
+      -- Wait for current batch to complete with error handling
+      local batch_result = Async.try_await(Async.all(current_batch))
 
-      for _, result in ipairs(results) do
-        local success, status = unpack(result)
-        if success then
-          if status == 'updated' then
-            updated_count = updated_count + 1
-          elseif status == 'up_to_date' then
-            skipped_count = skipped_count + 1
+      if batch_result.success then
+        -- Process successful results
+        for _, result in ipairs(batch_result.value) do
+          local success, status = unpack(result)
+          if success then
+            if status == 'updated' then
+              updated_count = updated_count + 1
+            elseif status == 'up_to_date' then
+              skipped_count = skipped_count + 1
+            end
+          else
+            error_count = error_count + 1
           end
         end
+      else
+        M.log('error', string.format('Error updating batch: %s', tostring(batch_result.error)))
+        error_count = error_count + (end_idx - start_idx + 1)
       end
     end
 
+    -- Report results
     if updated_count > 0 then
       M.log(
         'info',
-        string.format('Updated %d plugins, %d already up to date.', updated_count, skipped_count)
+        string.format(
+          'Updated %d plugins, %d already up to date, %d errors.',
+          updated_count,
+          skipped_count,
+          error_count
+        )
       )
+    elseif error_count > 0 then
+      M.log('warn', string.format('No plugins updated, %d errors occurred.', error_count))
     else
       M.log('info', 'All plugins already up to date.')
     end
 
     -- Close UI after a delay
-    vim.defer_fn(function()
-      ui:close()
-    end, 2000)
-  end)()
-end
-
--- Load all installed plugins
-function M.load_all()
-  Async.async(function()
-    for _, plugin in ipairs(plugins) do
-      if not plugin.is_lazy then
-        local installed = Async.await(plugin:is_installed())
-        if installed then
-          plugin:load()
-        end
-      end
-    end
+    Async.await(Async.delay(2000))
+    ui:close()
   end)()
 end
 
 -- Clean unused plugins
 function M.clean()
-  -- Get all installed plugins in both directories
-  local installed_dirs = {}
+  Async.async(function()
+    -- Get all installed plugins in both directories
+    local installed_dirs = {}
 
-  local function scan_dir(dir)
-    local handle = vim.uv.fs_scandir(dir)
-    if not handle then
-      return
-    end
-
-    while true do
-      local name, type = vim.uv.fs_scandir_next(handle)
-      if not name then
-        break
+    local function scan_dir(dir)
+      -- Use pcall for error handling
+      local ok, handle = pcall(vim.uv.fs_scandir, dir)
+      if not ok or not handle then
+        M.log('error', string.format('Error scanning directory %s: %s', dir, tostring(handle)))
+        return
       end
 
-      if type == 'directory' then
-        installed_dirs[name] = dir
-      end
-    end
-  end
+      while true do
+        local name, type = vim.uv.fs_scandir_next(handle)
+        if not name then
+          break
+        end
 
-  scan_dir(START_DIR)
-  scan_dir(OPT_DIR)
-
-  -- Find plugins not in our registry
-  local to_remove = {}
-  for name, dir in pairs(installed_dirs) do
-    local found = false
-    for _, plugin in ipairs(plugins) do
-      if plugin.plugin_name == name then
-        found = true
-        break
+        if type == 'directory' then
+          installed_dirs[name] = dir
+        end
       end
     end
 
-    if not found then
-      table.insert(to_remove, { name = name, dir = dir })
+    scan_dir(START_DIR)
+    scan_dir(OPT_DIR)
+
+    -- Find plugins not in our registry
+    local to_remove = {}
+    for name, dir in pairs(installed_dirs) do
+      local found = false
+      for _, plugin in ipairs(plugins) do
+        if plugin.plugin_name == name then
+          found = true
+          break
+        end
+      end
+
+      if not found then
+        table.insert(to_remove, { name = name, dir = dir })
+      end
     end
-  end
 
-  -- Remove unused plugins
-  if #to_remove > 0 then
-    M.log('info', string.format('Cleaning %d unused plugins...', #to_remove))
+    -- Remove unused plugins with proper error handling
+    if #to_remove > 0 then
+      M.log('info', string.format('Cleaning %d unused plugins...', #to_remove))
 
-    for _, item in ipairs(to_remove) do
-      local path = vim.fs.joinpath(item.dir, item.name)
-      M.log('info', string.format('Removing %s', path))
+      for _, item in ipairs(to_remove) do
+        local path = vim.fs.joinpath(item.dir, item.name)
+        M.log('info', string.format('Removing %s', path))
 
-      -- Use async version of delete
-      Async.async(function()
-        vim.fn.delete(path, 'rf')
-      end)()
+        -- Use async delete with error handling
+        local ok, err = pcall(function()
+          vim.fn.delete(path, 'rf')
+        end)
+
+        if not ok then
+          M.log('error', string.format('Error deleting %s: %s', path, tostring(err)))
+        end
+      end
+
+      M.log('info', 'Clean complete.')
+    else
+      M.log('info', 'No unused plugins to clean.')
     end
-
-    M.log('info', 'Clean complete.')
-  else
-    M.log('info', 'No unused plugins to clean.')
-  end
+  end)()
 end
 
 local function create_commands()
