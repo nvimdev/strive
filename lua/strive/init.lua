@@ -24,7 +24,7 @@ vim.g.pm_loaded = 0
 local DEFAULT_SETTINGS = {
   max_concurrent_tasks = if_nil(vim.g.strive_max_concurrent_tasks, 5),
   auto_install = if_nil(vim.g.strive_auto_install, true),
-  log_level = if_nil(vim.g.strive_log_level, 'info'),
+  log_level = if_nil(vim.g.strive_log_level, 'debug'),
   git_timeout = if_nil(vim.g.strive_git_timeout, 60000),
 }
 
@@ -135,18 +135,28 @@ end
 
 -- Process the queue, starting as many tasks as allowed
 function TaskQueue:process()
+  M.log(
+    'debug',
+    string.format('TaskQueue status: %d queued, %d active', #self.queue, self.active_tasks)
+  )
+  print(vim.inspect(self.queue))
+
   if #self.queue == 0 and self.active_tasks == 0 and self.on_empty then
+    M.log('info', 'All tasks completed, calling on_empty callback')
     self.on_empty()
     return
   end
-
+  M.log(
+    'debug',
+    string.format('Starting new task, active: %d, queued: %d', self.active_tasks, #self.queue)
+  )
   while self.active_tasks < self.max_concurrent and #self.queue > 0 do
     local task = table.remove(self.queue, 1)
     self.active_tasks = self.active_tasks + 1
 
     task(function()
       self.active_tasks = self.active_tasks - 1
-      self:process() -- Continue processing after task completes
+      self:process()
     end)
   end
 end
@@ -700,6 +710,7 @@ function Plugin:install()
   end
 
   return Async.wrap(function(callback)
+    print(callback)
     -- Check if already installed
     local installed = Async.await(self:is_installed())
     if installed then
@@ -726,7 +737,7 @@ function Plugin:install()
         end
       end,
     }, function(obj)
-      -- Use schedule for UI updates in callbacks
+      callback(obj.code == 0)
       vim.schedule(function()
         if obj.code == 0 then
           self.status = STATUS.INSTALLED
@@ -743,8 +754,6 @@ function Plugin:install()
               vim.cmd(self.build_action)
             end)
           end
-
-          callback(true)
         else
           self.status = STATUS.ERROR
           ui:update_entry(
@@ -752,7 +761,6 @@ function Plugin:install()
             self.status,
             'Failed: ' .. (obj.stderr or 'Unknown error') .. ' code: ' .. obj.code
           )
-          callback(false)
         end
       end)
     end)
