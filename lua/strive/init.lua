@@ -654,20 +654,20 @@ function Plugin:load()
   self.loaded = true
   vim.g.strim_loaded = vim.g.strim_loaded + 1
 
+  load_opts(self.init_opts)
+
+  self:packadd()
+  self:load_scripts()
+
+  self:call_setup()
+
   Iter(self.dependencies):map(function(d)
     if not d.loaded then
       d:load()
     end
   end)
 
-  load_opts(self.init_opts)
-
-  self:packadd()
-
-  self:call_setup()
-
   load_opts(self.config_opts)
-
   -- Update status
   self.status = STATUS.LOADED
 
@@ -737,6 +737,33 @@ function Plugin:ft(filetypes)
   return self
 end
 
+function Plugin:load_scripts()
+  Async.async(function()
+    local plugin_path = self:get_path()
+    local plugin_dir = vim.fs.joinpath(plugin_path, 'plugin')
+
+    local handle = uv.fs_scandir(plugin_dir)
+    if not handle then
+      return
+    end
+
+    while true do
+      local name, type = uv.fs_scandir_next(handle)
+      if not name then
+        break
+      end
+
+      if type == 'file' and (name:match('%.lua$') or name:match('%.vim$')) then
+        local file_path = vim.fs.joinpath(plugin_dir, name)
+
+        vim.schedule(function()
+          vim.cmd('source ' .. vim.fn.fnameescape(file_path))
+        end)
+      end
+    end
+  end)()
+end
+
 -- Set up lazy loading for specific commands
 function Plugin:cmd(commands)
   self.is_lazy = true
@@ -747,46 +774,16 @@ function Plugin:cmd(commands)
       pcall(api.nvim_del_user_command, cmd_name)
       local args = cmd_args.args ~= '' and ' ' .. cmd_args.args or ''
       local bang = cmd_args.bang and '!' or ''
-      Async.async(function()
-        if not self.loaded then
-          self:load()
-
-          local plugin_path = self:get_path()
-          local plugin_dir = vim.fs.joinpath(plugin_path, 'plugin')
-
-          local stat = uv.fs_stat(plugin_dir)
-          if stat and stat.type == 'directory' then
-            local handle = uv.fs_scandir(plugin_dir)
-            if handle then
-              while true do
-                local name, type = uv.fs_scandir_next(handle)
-                if not name then
-                  break
-                end
-
-                if type == 'file' and (name:match('%.lua$') or name:match('%.vim$')) then
-                  local file_path = vim.fs.joinpath(plugin_dir, name)
-                  vim.schedule(function()
-                    vim.cmd('source ' .. vim.fn.fnameescape(file_path))
-                  end)
-                end
-              end
-            end
+      self:load()
+      vim.schedule(function()
+        if vim.fn.exists(':' .. cmd_name) == 2 then
+          ---@diagnostic disable-next-line: param-type-mismatch
+          local ok, err = pcall(vim.cmd, cmd_name .. bang .. args)
+          if not ok then
+            vim.notify(string.format('execute %s wrong: %s', cmd_name, err), vim.log.levels.ERROR)
           end
-
-          vim.schedule(function()
-            if vim.fn.exists(':' .. cmd_name) == 2 then
-              local ok, err = pcall(vim.cmd, cmd_name .. bang .. args)
-              if not ok then
-                vim.notify(
-                  string.format('execute %s wrong: %s', cmd_name, err),
-                  vim.log.levels.ERROR
-                )
-              end
-            end
-          end)
         end
-      end)()
+      end)
     end, {
       nargs = '*',
       bang = true,
@@ -1203,8 +1200,6 @@ function M.log(level, message)
     )
   end
 end
-
-local called_installer = false
 
 -- Register a plugin
 function M.use(spec)
