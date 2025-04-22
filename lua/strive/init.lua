@@ -569,7 +569,7 @@ function Plugin.new(spec)
     plugin_name = plugin_name, -- Just the repo part (for loading)
     is_remote = not name:find(vim.env.HOME), -- Is it a remote or local plugin
     is_local = spec.is_local or false, -- Development mode flag
-    is_lazy = false, -- Whether to lazy load
+    is_lazy = spec.is_lazy or false, -- Whether to lazy load
     load_path = nil, -- Loacal path to load
 
     -- States
