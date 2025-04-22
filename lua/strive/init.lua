@@ -18,7 +18,8 @@ local OPT_DIR = vim.fs.joinpath(data_dir, 'site', 'pack', 'strive', 'opt')
 
 -- Add to packpath
 vim.opt.packpath:prepend(vim.fs.joinpath(data_dir, 'site'))
-vim.g.strim_loaded = 0
+vim.g.strive_loaded = 0
+vim.g.strive_count = 0
 
 local DEFAULT_SETTINGS = {
   max_concurrent_tasks = if_nil(vim.g.strive_max_concurrent_tasks, 10),
@@ -652,7 +653,7 @@ function Plugin:load()
   -- Prevent recursive loading
   -- Set loaded to true before actual loading to prevent infinite loops
   self.loaded = true
-  vim.g.strim_loaded = vim.g.strim_loaded + 1
+  vim.g.strive_loaded = vim.g.strive_loaded + 1
 
   load_opts(self.init_opts)
 
@@ -801,6 +802,17 @@ function Plugin:cmd(commands)
     table.insert(self.user_commands, cmd_name)
   end
 
+  return self
+end
+
+function Plugin:cond(condition)
+  self.is_lazy = true
+  if
+    (type(condition) == 'string' and api.nvim_eval(condition))
+    or (type(condition) == 'function' and condition())
+  then
+    self:load()
+  end
   return self
 end
 
@@ -1214,6 +1226,7 @@ function M.use(spec)
   -- Add to collections
   table.insert(plugins, plugin)
   plugin_map[plugin.name] = plugin
+  vim.g.strive_count = vim.g.strive_count + 1
 
   return plugin
 end
