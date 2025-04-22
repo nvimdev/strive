@@ -21,7 +21,7 @@ vim.opt.packpath:prepend(vim.fs.joinpath(data_dir, 'site'))
 vim.g.strim_loaded = 0
 
 local DEFAULT_SETTINGS = {
-  max_concurrent_tasks = if_nil(vim.g.strive_max_concurrent_tasks, 5),
+  max_concurrent_tasks = if_nil(vim.g.strive_max_concurrent_tasks, 10),
   auto_install = if_nil(vim.g.strive_auto_install, true),
   log_level = if_nil(vim.g.strive_log_level, 'warn'),
   git_timeout = if_nil(vim.g.strive_git_timeout, 60000),
@@ -557,7 +557,7 @@ function Plugin.new(spec)
   -- Extract plugin name from repo
   local name = vim.fs.normalize(spec.name)
   if vim.startswith(name, vim.env.HOME) then
-    spec.dev = true
+    spec.is_local = true
   end
   local parts = vim.split(name, '/', { trimempty = true })
   local plugin_name = parts[#parts]:gsub('%.git$', '')
@@ -568,8 +568,9 @@ function Plugin.new(spec)
     name = name, -- Full repo name (user/repo)
     plugin_name = plugin_name, -- Just the repo part (for loading)
     is_remote = not name:find(vim.env.HOME), -- Is it a remote or local plugin
-    is_dev = spec.dev or false, -- Development mode flag
+    is_local = spec.is_local or false, -- Development mode flag
     is_lazy = false, -- Whether to lazy load
+    load_path = nil, -- Loacal path to load
 
     -- States
     status = STATUS.PENDING, -- Current plugin status
@@ -582,7 +583,7 @@ function Plugin.new(spec)
     keys = {}, -- Keys to trigger loading
 
     -- Configuration
-    setup_opts = spec.setup or nil, -- Options for plugin setup()
+    setup_opts = spec.setup or {}, -- Options for plugin setup()
     init_opts = spec.init, -- Options for before load plugin
     config_opts = spec.config, -- Config function to run after loading
     after_fn = spec.after, -- Function to run after dependencies load
@@ -600,11 +601,10 @@ end
 
 -- Get the plugin installation path
 function Plugin:get_path()
-  if not self.is_dev then
+  if not self.is_local then
     return vim.fs.joinpath(self.is_lazy and OPT_DIR or START_DIR, self.plugin_name)
   end
-  return vim.g.strive_dev_path and vim.fs.joinpath(vim.g.strive_dev_path, self.plugin_name)
-    or self.name
+  return vim.fs.joinpath(self.load_path, self.plugin_name) or self.name
 end
 
 -- Check if plugin is installed (async version)
@@ -629,7 +629,7 @@ end
 function Plugin:packadd()
   -- If it's a lazy-loaded plugin, add it
   if self.is_lazy then
-    if not self.is_dev then
+    if not self.is_local then
       vim.cmd.packadd(self.plugin_name)
     else
       vim.opt.rtp:append(self:get_path())
@@ -664,9 +664,7 @@ function Plugin:load()
 
   self:packadd()
 
-  if self.setup_opts then
-    self:call_setup()
-  end
+  self:call_setup()
 
   load_opts(self.config_opts)
 
@@ -745,23 +743,57 @@ function Plugin:cmd(commands)
   self.commands = type(commands) ~= 'table' and { commands } or commands
 
   for _, cmd_name in ipairs(self.commands) do
-    -- Create a user command that loads the plugin and then executes the real command
     api.nvim_create_user_command(cmd_name, function(cmd_args)
-      self:load()
-
-      -- Execute the original command with the arguments
+      pcall(api.nvim_del_user_command, cmd_name)
       local args = cmd_args.args ~= '' and ' ' .. cmd_args.args or ''
       local bang = cmd_args.bang and '!' or ''
+      Async.async(function()
+        if not self.loaded then
+          self:load()
 
-      vim.cmd(cmd_name .. bang .. args)
+          local plugin_path = self:get_path()
+          local plugin_dir = vim.fs.joinpath(plugin_path, 'plugin')
+
+          local stat = uv.fs_stat(plugin_dir)
+          if stat and stat.type == 'directory' then
+            local handle = uv.fs_scandir(plugin_dir)
+            if handle then
+              while true do
+                local name, type = uv.fs_scandir_next(handle)
+                if not name then
+                  break
+                end
+
+                if type == 'file' and (name:match('%.lua$') or name:match('%.vim$')) then
+                  local file_path = vim.fs.joinpath(plugin_dir, name)
+                  vim.schedule(function()
+                    vim.cmd('source ' .. vim.fn.fnameescape(file_path))
+                  end)
+                end
+              end
+            end
+          end
+
+          vim.schedule(function()
+            if vim.fn.exists(':' .. cmd_name) == 2 then
+              local ok, err = pcall(vim.cmd, cmd_name .. bang .. args)
+              if not ok then
+                vim.notify(
+                  string.format('execute %s wrong: %s', cmd_name, err),
+                  vim.log.levels.ERROR
+                )
+              end
+            end
+          end)
+        end
+      end)()
     end, {
       nargs = '*',
       bang = true,
       complete = function(_, cmd_line, _)
-        -- If the plugin has a completion function, load the plugin first
-        self:load()
-
-        -- Try to use the original command's completion
+        if not self.loaded then
+          self:load()
+        end
         local ok, result = pcall(function()
           return vim.fn.getcompletion(cmd_line, 'cmdline')
         end)
@@ -809,8 +841,9 @@ function Plugin:keys(mappings)
 end
 
 -- Mark plugin as a development plugin
-function Plugin:dev()
-  self.is_dev = true
+function Plugin:load_path(path)
+  self.is_local = true
+  self.load_path = vim.fs.normalize(path)
   self.is_remote = false
   return self
 end
@@ -872,13 +905,6 @@ function Plugin:call_setup()
   end
 end
 
-function Plugin:load_rtp(callback)
-  local path = self:get_path()
-  vim.opt.rtp:append(path)
-  self:call_setup()
-  callback()
-end
-
 function Plugin:build(action)
   assert(type(action) == 'string')
   self.build_action = action
@@ -901,7 +927,7 @@ end
 
 -- Install the plugin
 function Plugin:install()
-  if self.is_dev or not self.is_remote then
+  if self.is_local or not self.is_remote then
     return Async.wrap(function(cb)
       cb(true)
     end)()
@@ -914,7 +940,7 @@ function Plugin:install()
     local cmd = { 'git', 'clone', '--progress', url, path }
 
     -- Ensure parent directory exists
-    vim.fn.mkdir(vim.fs.dirname(path), 'p')
+    -- vim.fn.mkdir(vim.fs.dirname(path), 'p')
 
     -- Update status
     self.status = STATUS.INSTALLING
@@ -949,9 +975,8 @@ function Plugin:install()
 
       -- Run build command if specified
       if self.build_action then
-        self:load_rtp(function()
-          vim.cmd(self.build_action)
-        end)
+        self:load()
+        vim.cmd(self.build_action)
       end
     else
       self.status = STATUS.ERROR
@@ -967,7 +992,7 @@ end
 
 function Plugin:has_updates()
   return Async.wrap(function(callback)
-    if self.is_dev or not self.is_remote then
+    if self.is_local or not self.is_remote then
       callback(false)
       return
     end
@@ -993,7 +1018,7 @@ function Plugin:has_updates()
 end
 
 function Plugin:update()
-  if self.is_dev or not self.is_remote then
+  if self.is_local or not self.is_remote then
     return Async.wrap(function(cb)
       cb(true, 'skip')
     end)()
@@ -1085,7 +1110,7 @@ function Plugin:update()
 end
 
 function Plugin:install_with_retry()
-  if self.is_dev or not self.is_remote then
+  if self.is_local or not self.is_remote then
     return Async.wrap(function(cb)
       cb(true)
     end)()
@@ -1141,9 +1166,8 @@ function Plugin:install_with_retry()
 
       -- Run build command if specified
       if self.build_action then
-        self:load_rtp(function()
-          vim.cmd(self.build_action)
-        end)
+        self:load()
+        vim.cmd(self.build_action)
       end
     else
       self.status = STATUS.ERROR
@@ -1180,6 +1204,8 @@ function M.log(level, message)
   end
 end
 
+local called_installer = false
+
 -- Register a plugin
 function M.use(spec)
   local plugin = Plugin.new(spec)
@@ -1202,22 +1228,6 @@ function M.get_plugin(name)
   return plugin_map[name]
 end
 
--- Set up auto-install
-local function setup_auto_install()
-  api.nvim_create_autocmd('UIEnter', {
-    group = api.nvim_create_augroup('strive_auto_install', { clear = true }),
-    callback = function()
-      -- We're already in a UIEnter event, so we should be careful about recursion
-      -- We want to install plugins but not trigger another UIEnter event
-      -- Use vim.schedule to avoid nesting too deep
-      vim.schedule(function()
-        M.install()
-      end)
-    end,
-    once = true, -- Only trigger once to avoid recursion
-  })
-end
-
 -- Install all plugins
 function M.install()
   Async.async(function()
@@ -1225,7 +1235,7 @@ function M.install()
 
     -- Find plugins that need installation
     for _, plugin in ipairs(plugins) do
-      if plugin.is_remote and not plugin.is_dev then
+      if plugin.is_remote and not plugin.is_local then
         local result = Async.try_await(plugin:is_installed())
 
         if result.success and not result.value then
@@ -1301,7 +1311,7 @@ function M.update()
 
     -- Find plugins that need updating with proper error handling
     for _, plugin in ipairs(plugins) do
-      if plugin.is_remote and not plugin.is_dev then
+      if plugin.is_remote and not plugin.is_local then
         local result = Async.try_await(plugin:is_installed())
 
         if result.success and result.value then
@@ -1466,28 +1476,6 @@ function M.clean()
   end)()
 end
 
-local function create_commands()
-  local t = { install = 1, update = 2, clean = 3 }
-  api.nvim_create_user_command('Strive', function(args)
-    if t[args.args] then
-      M[args.args]()
-    end
-  end, {
-    desc = 'Install plugins',
-    nargs = '+',
-    complete = function()
-      return vim.tbl_keys(t)
-    end,
-  })
-end
-
--- Setup auto-install if enabled
-if DEFAULT_SETTINGS.auto_install then
-  setup_auto_install()
-end
-
-create_commands()
-
 ffi.cdef([[
   typedef long time_t;
   typedef int clockid_t;
@@ -1497,17 +1485,62 @@ ffi.cdef([[
   } timespec;
   int clock_gettime(clockid_t clk_id, struct timespec *tp);
 ]])
-local CLOCK_PROCESS_CPUTIME_ID = vim.uv.os_uname().sysname:match('Darwin') and 12 or 2
 
-api.nvim_create_autocmd('UIEnter', {
-  callback = function()
-    if vim.g.strive_startup_time ~= nil then
-      return
-    end
+local CLOCK_PROCESS_CPUTIME_ID = uv.os_uname().sysname:match('Darwin') and 12 or 2
 
-    local t = assert(ffi.new('timespec[?]', 1))
-    ffi.C.clock_gettime(CLOCK_PROCESS_CPUTIME_ID, t)
-    vim.g.strive_startup_time = tonumber(t[0].tv_sec) * 1e3 + tonumber(t[0].tv_nsec) / 1e6
+local function startuptime()
+  if vim.g.strive_startup_time ~= nil then
+    return
+  end
+
+  local t = assert(ffi.new('timespec[?]', 1))
+  ffi.C.clock_gettime(CLOCK_PROCESS_CPUTIME_ID, t)
+  vim.g.strive_startup_time = tonumber(t[0].tv_sec) * 1e3 + tonumber(t[0].tv_nsec) / 1e6
+end
+
+-- Set up auto-install with better event handling
+local function setup_auto_install()
+  -- Check if Neovim startup is already complete
+  -- When using strive in plugin folder
+  if vim.v.vim_did_enter == 1 then
+    -- UI has already initialized, schedule installation directly
+    vim.schedule(function()
+      M.log('debug', 'UI already initialized, installing plugins now')
+      M.install()
+    end)
+    startuptime()
+    return
+  end
+
+  -- UI has not initialized yet, register for UIEnter event
+  api.nvim_create_autocmd('UIEnter', {
+    group = api.nvim_create_augroup('strive_auto_install', { clear = true }),
+    callback = function()
+      vim.schedule(function()
+        M.log('debug', 'UIEnter triggered, installing plugins')
+        M.install()
+      end)
+      startuptime()
+    end,
+    once = true, -- Only trigger once to avoid recursion
+  })
+end
+
+-- Setup auto-install if enabled
+if DEFAULT_SETTINGS.auto_install then
+  setup_auto_install()
+end
+
+local t = { install = 1, update = 2, clean = 3 }
+api.nvim_create_user_command('Strive', function(args)
+  if t[args.args] then
+    M[args.args]()
+  end
+end, {
+  desc = 'Install plugins',
+  nargs = '+',
+  complete = function()
+    return vim.tbl_keys(t)
   end,
 })
 
