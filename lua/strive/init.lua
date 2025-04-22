@@ -702,10 +702,10 @@ function Plugin:on(events)
 
           -- Schedule the event emission to avoid nesting too deep
           -- vim.schedule(function()
-            api.nvim_exec_autocmds(event, {
-              modeline = false,
-              data = event_data,
-            })
+          api.nvim_exec_autocmds(event, {
+            modeline = false,
+            data = event_data,
+          })
           -- end)
         end
       end,
@@ -1302,6 +1302,7 @@ function M.update()
     local strive_plugin = Plugin.new({
       name = 'nvimdev/strive',
       plugin_name = 'strive',
+      is_lazy = true,
     })
 
     -- Find plugins that need updating with proper error handling
