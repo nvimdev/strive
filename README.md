@@ -1,3 +1,1 @@
-## Developing
-
 ## License MIT
