@@ -695,18 +695,18 @@ function Plugin:on(events)
       once = true,
       callback = function(args)
         -- Don't re-emit the event if we've already loaded the plugin
-        if not self.loaded and self:load() and args.event == 'FileType' then
+        if not self.loaded and self:load() then
           -- We need to re-emit the event, but carefully to avoid nesting too deep
           -- Instead of exec_autocmds, trigger the event using a different mechanism
           local event_data = args.data and vim.deepcopy(args.data) or {}
 
           -- Schedule the event emission to avoid nesting too deep
-          vim.schedule(function()
+          -- vim.schedule(function()
             api.nvim_exec_autocmds(event, {
               modeline = false,
               data = event_data,
             })
-          end)
+          -- end)
         end
       end,
     })
