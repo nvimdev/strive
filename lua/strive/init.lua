@@ -26,6 +26,7 @@ local DEFAULT_SETTINGS = {
   auto_install = if_nil(vim.g.strive_auto_install, true),
   log_level = if_nil(vim.g.strive_log_level, 'warn'),
   git_timeout = if_nil(vim.g.strive_git_timeout, 60000),
+  git_depth = if_nil(vim.g.strive_git_depth, 1),
   install_retry = if_nil(vim.g.strive_install_with_retry, false),
 }
 
@@ -523,10 +524,11 @@ function ProgressWindow:refresh()
   end
   table.sort(sorted_plugins)
 
+  local width = api.nvim_win_get_width(self.winid)
   -- Header
-  table.insert(lines, string.rep('=', 80))
+  table.insert(lines, string.rep('=', width))
   table.insert(lines, string.format('%-30s %-10s %s', 'Plugin', 'Status', 'Message'))
-  table.insert(lines, string.rep('=', 80))
+  table.insert(lines, string.rep('=', width))
 
   -- Plugin entries
   for _, name in ipairs(sorted_plugins) do
@@ -968,10 +970,15 @@ function Plugin:install()
     -- Try to install with proper error handling
     local path = self:get_path()
     local url = ('https://github.com/%s'):format(self.name)
-    local cmd = { 'git', 'clone', '--progress', url, path }
-
-    -- Ensure parent directory exists
-    -- vim.fn.mkdir(vim.fs.dirname(path), 'p')
+    local cmd = {
+      'git',
+      'clone',
+      '--depth=' .. DEFAULT_SETTINGS.git_depth,
+      '--single-branch',
+      '--progress',
+      url,
+      path,
+    }
 
     -- Update status
     self.status = STATUS.INSTALLING
@@ -1027,24 +1034,33 @@ function Plugin:has_updates()
       callback(false)
       return
     end
-
     local path = self:get_path()
-    local fetch_result =
-      Async.try_await(Async.system({ 'git', '-C', self:get_path(), 'remote', 'update' }))
-    if not fetch_result.success then
-      callback(false)
-      return
-    end
-    -- Check local status
-    local status_result = Async.try_await(Async.system({ 'git', '-C', path, 'status', '-uno' }))
-    if not status_result.success then
+    local cmd = {
+      'git',
+      '-C',
+      path,
+      'fetch',
+      '--dry-run',
+      '--quiet',
+      'origin',
+      'HEAD',
+      '&&',
+      'git',
+      '-C',
+      path,
+      'rev-list',
+      '--count',
+      'HEAD..@{upstream}',
+    }
+
+    local result = Async.try_await(Async.system(cmd))
+    if not result.success then
       callback(false)
       return
     end
 
-    local stdout = status_result.value.stdout
-    local behind = stdout:match('behind') ~= nil
-    callback(behind)
+    local has_updates = result.value.stdout and tonumber(result.value.stdout:match('%d+')) > 0
+    callback(has_updates)
   end)()
 end
 
