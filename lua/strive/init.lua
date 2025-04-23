@@ -571,7 +571,7 @@ function Plugin.new(spec)
     is_remote = not name:find(vim.env.HOME), -- Is it a remote or local plugin
     is_local = spec.is_local or false, -- Development mode flag
     is_lazy = spec.is_lazy or false, -- Whether to lazy load
-    load_path = nil, -- Loacal path to load
+    local_path = nil, -- Loacal path to load
 
     -- States
     status = STATUS.PENDING, -- Current plugin status
@@ -594,7 +594,7 @@ function Plugin.new(spec)
     dependencies = spec.depends or {}, -- Dependencies
 
     user_commands = {}, -- Created user commands
-    build_action = spec.build or nil,
+    run_action = spec.build or nil,
   }, Plugin)
 
   return self
@@ -602,10 +602,10 @@ end
 
 -- Get the plugin installation path
 function Plugin:get_path()
-  if not self.is_local then
+  if not self.is_local and not self.local_path then
     return vim.fs.joinpath(self.is_lazy and OPT_DIR or START_DIR, self.plugin_name)
   end
-  return vim.fs.joinpath(self.load_path, self.plugin_name) or self.name
+  return vim.fs.joinpath(self.local_path, self.plugin_name) or self.name
 end
 
 -- Check if plugin is installed (async version)
@@ -852,7 +852,7 @@ end
 -- Mark plugin as a development plugin
 function Plugin:load_path(path)
   self.is_local = true
-  self.load_path = vim.fs.normalize(path)
+  self.local_path = vim.fs.normalize(path)
   self.is_remote = false
   return self
 end
@@ -914,9 +914,9 @@ function Plugin:call_setup()
   end
 end
 
-function Plugin:build(action)
+function Plugin:run(action)
   assert(type(action) == 'string')
-  self.build_action = action
+  self.run_action = action
   return self
 end
 
@@ -983,9 +983,9 @@ function Plugin:install()
       end
 
       -- Run build command if specified
-      if self.build_action then
+      if self.run_action then
         self:load()
-        vim.cmd(self.build_action)
+        vim.cmd(self.run_action)
       end
     else
       self.status = STATUS.ERROR
@@ -1173,10 +1173,10 @@ function Plugin:install_with_retry()
         self:theme(self.colorscheme)
       end
 
-      -- Run build command if specified
-      if self.build_action then
+      -- Run command if specified
+      if self.run_action then
         self:load()
-        vim.cmd(self.build_action)
+        vim.cmd(self.run_action)
       end
     else
       self.status = STATUS.ERROR
