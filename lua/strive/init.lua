@@ -289,6 +289,18 @@ function Async.retry(promise_fn, max_retries, initial_delay)
   end
 end
 
+function Async.scandir(dir)
+  return function(callback)
+    uv.fs_scandir(dir, function(err, handle)
+      if err then
+        callback(Result.failure(err))
+      else
+        callback(Result.success(handle))
+      end
+    end)
+  end
+end
+
 -- =====================================================================
 -- 3. Task Queue
 -- =====================================================================
@@ -743,23 +755,20 @@ function Plugin:load_scripts()
     local plugin_path = self:get_path()
     local plugin_dir = vim.fs.joinpath(plugin_path, 'plugin')
 
-    local handle = uv.fs_scandir(plugin_dir)
-    if not handle then
+    local result = Async.try_await(Async.scandir(plugin_dir))
+    if not result.success or not result.value or not result.value[2] then
+      M.log('debug', string.format('Plugin directory not found: %s', plugin_dir))
       return
     end
 
     while true do
-      local name, type = uv.fs_scandir_next(handle)
+      local name, type = uv.fs_scandir_next(result.value[2])
       if not name then
         break
       end
-
       if type == 'file' and (name:match('%.lua$') or name:match('%.vim$')) then
         local file_path = vim.fs.joinpath(plugin_dir, name)
-
-        vim.schedule(function()
-          vim.cmd('source ' .. vim.fn.fnameescape(file_path))
-        end)
+        vim.cmd('source ' .. vim.fn.fnameescape(file_path))
       end
     end
   end)()
