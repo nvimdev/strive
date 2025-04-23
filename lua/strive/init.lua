@@ -62,14 +62,6 @@ function Result.failure(err)
   return setmetatable({ success = false, value = nil, error = err }, Result)
 end
 
-function Async.safe_schedule(callback)
-  if not vim.in_fast_event() then
-    callback()
-    return
-  end
-  vim.schedule(callback)
-end
-
 -- Wrap a function to return a promise
 function Async.wrap(func)
   return function(...)
@@ -205,7 +197,7 @@ function Async.async(func)
       end)
 
       if not status then
-        Async.safe_schedule(function()
+        vim.schedule(function()
           vim.notify('Async error: ' .. tostring(result), vim.log.levels.ERROR)
         end)
       end
@@ -495,7 +487,7 @@ function ProgressWindow:update_entry(plugin_name, status, message)
 
   if self.visible then
     -- Schedule UI updates to run in the main event loop
-    Async.safe_schedule(function()
+    vim.schedule(function()
       self:refresh()
     end)
   end
@@ -783,7 +775,7 @@ function Plugin:load_scripts(callback)
       end
       if type == 'file' and (name:match('%.lua$') or name:match('%.vim$')) then
         local file_path = vim.fs.joinpath(plugin_dir, name)
-        Async.safe_schedule(function()
+        vim.schedule(function()
           vim.cmd('source ' .. vim.fn.fnameescape(file_path))
           if callback then
             callback()
@@ -919,7 +911,7 @@ function Plugin:theme(name)
   Async.async(function()
     local installed = Async.await(self:is_installed())
     if installed then
-      Async.safe_schedule(function()
+      vim.schedule(function()
         vim.opt.rtp:append(vim.fs.joinpath(START_DIR, self.plugin_name))
         vim.cmd.colorscheme(self.colorscheme)
       end)
@@ -995,7 +987,7 @@ function Plugin:install()
           lines = vim.split(lines, '\n', { trimempty = true })
 
           if #lines > 0 then
-            Async.safe_schedule(function()
+            vim.schedule(function()
               ui:update_entry(self.name, self.status, lines[#lines])
             end)
           end
@@ -1126,7 +1118,7 @@ function Plugin:update()
           lines = vim.split(lines, '\n', { trimempty = true })
 
           if #lines > 0 then
-            Async.safe_schedule(function()
+            vim.schedule(function()
               ui:update_entry(self.name, self.status, lines[#lines])
             end)
           end
@@ -1181,7 +1173,7 @@ function Plugin:install_with_retry()
             lines = vim.split(lines, '\n', { trimempty = true })
 
             if #lines > 0 then
-              Async.safe_schedule(function()
+              vim.schedule(function()
                 ui:update_entry(self.name, self.status, lines[#lines])
               end)
             end
@@ -1540,7 +1532,7 @@ local function setup_auto_install()
   -- When using strive in plugin folder
   if vim.v.vim_did_enter == 1 then
     -- UI has already initialized, schedule installation directly
-    Async.safe_schedule(function()
+    vim.schedule(function()
       M.log('debug', 'UI already initialized, installing plugins now')
       M.install()
     end)
@@ -1552,7 +1544,7 @@ local function setup_auto_install()
   api.nvim_create_autocmd('UIEnter', {
     group = api.nvim_create_augroup('strive_auto_install', { clear = true }),
     callback = function()
-      Async.safe_schedule(function()
+      vim.schedule(function()
         M.log('debug', 'UIEnter triggered, installing plugins')
         M.install()
       end)
