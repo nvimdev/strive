@@ -377,7 +377,6 @@ function TaskQueue:status()
   }
 end
 
-local task_queue = TaskQueue.new(DEFAULT_SETTINGS.max_concurrent_tasks)
 -- =====================================================================
 -- 4. UI Window
 -- =====================================================================
@@ -457,6 +456,7 @@ function ProgressWindow:open()
     title = self.title,
     title_pos = 'center',
   })
+  self.ns = api.nvim_create_namespace('Strive')
 
   -- Set window options
   vim.wo[self.winid].wrap = false
@@ -529,7 +529,6 @@ function ProgressWindow:refresh()
   table.insert(lines, string.rep('=', width))
   table.insert(lines, string.format('%-30s %-10s %s', 'Plugin', 'Status', 'Message'))
   table.insert(lines, string.rep('=', width))
-
   -- Plugin entries
   for _, name in ipairs(sorted_plugins) do
     local entry = self.entries[name]
@@ -544,6 +543,7 @@ function ProgressWindow:refresh()
   api.nvim_buf_set_lines(self.bufnr, 0, -1, false, lines)
   vim.bo[self.bufnr].modifiable = false
 
+  vim.hl.range(self.bufnr, self.ns, 'Comment', { 0, 0 }, { 2, -1 })
   return self
 end
 
@@ -1034,17 +1034,24 @@ function Plugin:has_updates()
       callback(false)
       return
     end
+
     local path = self:get_path()
-    local cmd = {
+    local fetch_cmd = {
       'git',
       '-C',
       path,
       'fetch',
-      '--dry-run',
       '--quiet',
       'origin',
-      'HEAD',
-      '&&',
+    }
+
+    local result = Async.try_await(Async.system(fetch_cmd))
+    if not result.success then
+      callback(false)
+      return
+    end
+
+    local rev_cmd = {
       'git',
       '-C',
       path,
@@ -1053,13 +1060,15 @@ function Plugin:has_updates()
       'HEAD..@{upstream}',
     }
 
-    local result = Async.try_await(Async.system(cmd))
+    result = Async.try_await(Async.system(rev_cmd))
     if not result.success then
       callback(false)
       return
     end
 
-    local has_updates = result.value.stdout and tonumber(result.value.stdout:match('%d+')) > 0
+    local count = tonumber(result.value.stdout and result.value.stdout:match('%d+') or '0')
+    local has_updates = count and count > 0
+
     callback(has_updates)
   end)()
 end
@@ -1303,6 +1312,8 @@ function M.install()
 
     M.log('info', string.format('Installing %d plugins...', #plugins_to_install))
     ui:open()
+
+    local task_queue = TaskQueue.new(DEFAULT_SETTINGS.max_concurrent_tasks)
 
     -- Create installation tasks with proper error handling
     local install_tasks = {}
