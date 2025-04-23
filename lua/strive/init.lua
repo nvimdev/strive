@@ -666,8 +666,7 @@ function Plugin:load(opts)
     return false
   end
 
-  -- Prevent recursive loading
-  -- Set loaded to true before actual loading to prevent infinite loops
+  -- Set loaded flag to prevent recursive loading
   self.loaded = true
   vim.g.strive_loaded = vim.g.strive_loaded + 1
 
@@ -677,23 +676,42 @@ function Plugin:load(opts)
 
   self:packadd()
   self:load_scripts(opts and opts.script_cb or nil)
-
   self:call_setup()
-
-  if #self.dependencies > 0 then
-    for _, dep in ipairs(self.dependencies) do
-      if not dep.loaded then
-        dep:load()
-      end
-    end
-  end
-
-  if self.config_opts then
-    load_opts(self.config_opts)
-  end
 
   self.status = STATUS.LOADED
   pcall(api.nvim_del_augroup_by_name, 'strive_' .. self.plugin_name)
+
+  -- Load dependencies in parallel
+  if #self.dependencies > 0 then
+    Async.async(function()
+      local dependency_promises = {}
+      for _, dep in ipairs(self.dependencies) do
+        if not dep.loaded then
+          table.insert(dependency_promises, function(cb)
+            Async.async(function()
+              local success = dep:load()
+              cb(Result.success(success))
+            end)()
+          end)
+        end
+      end
+
+      if #dependency_promises > 0 then
+        Async.await(Async.all(dependency_promises))
+      end
+
+      -- Run config after all dependencies are loaded
+      if self.config_opts then
+        load_opts(self.config_opts)
+      end
+    end)()
+  else
+    -- No dependencies, run config immediately
+    if self.config_opts then
+      load_opts(self.config_opts)
+    end
+  end
+
   return true
 end
 
@@ -1357,107 +1375,69 @@ function M.update()
     M.log('info', 'Checking for updates...')
     local plugins_to_update = {}
 
-    -- Add Strive plugin itself to the update list
-    local strive_plugin = Plugin.new({
-      name = 'nvimdev/strive',
-      plugin_name = 'strive',
-      is_lazy = true,
-    })
-
-    -- Find plugins that need updating with proper error handling
     for _, plugin in ipairs(plugins) do
       if plugin.is_remote and not plugin.is_local then
-        local result = Async.try_await(plugin:is_installed())
-
-        if result.success and result.value then
+        local installed = Async.await(plugin:is_installed())
+        if installed then
           table.insert(plugins_to_update, plugin)
-        elseif not result.success then
-          M.log(
-            'error',
-            string.format(
-              'Error checking if %s is installed: %s',
-              plugin.name,
-              tostring(result.error)
-            )
-          )
         end
       end
     end
 
-    -- Check if Strive itself is installed
-    local strive_result = Async.try_await(strive_plugin:is_installed())
-    if strive_result.success and strive_result.value then
-      table.insert(plugins_to_update, strive_plugin)
-    end
-
     if #plugins_to_update == 0 then
-      M.log('debug', 'No plugins to update.')
+      M.log('info', 'No plugins to update.')
       return
     end
 
     ui:open()
 
-    local updated_count = 0
-    local skipped_count = 0
-    local error_count = 0
-
-    -- Update plugins in batches for better control and error handling
-    local batch_size = DEFAULT_SETTINGS.max_concurrent_tasks
-    local total_batches = math.ceil(#plugins_to_update / batch_size)
-
-    for batch = 1, total_batches do
-      local start_idx = (batch - 1) * batch_size + 1
-      local end_idx = math.min(batch * batch_size, #plugins_to_update)
-      local current_batch = {}
-
-      for i = start_idx, end_idx do
-        local plugin = plugins_to_update[i]
-        table.insert(current_batch, plugin:update())
-      end
-
-      -- Wait for current batch to complete with error handling
-      local batch_result = Async.try_await(Async.all(current_batch))
-
-      if batch_result.success then
-        -- Process successful results
-        for _, result in ipairs(batch_result.value) do
-          local success, status = unpack(result)
-          if success then
-            if status == 'updated' then
-              updated_count = updated_count + 1
-            elseif status == 'up_to_date' then
-              skipped_count = skipped_count + 1
-            end
-          else
-            error_count = error_count + 1
-          end
-        end
-      else
-        M.log('error', string.format('Error updating batch: %s', tostring(batch_result.error)))
-        error_count = error_count + (end_idx - start_idx + 1)
-      end
-    end
-
-    -- Report results
-    if updated_count > 0 then
-      M.log(
-        'info',
-        string.format(
-          'Updated %d plugins, %d already up to date, %d errors.',
-          updated_count,
-          skipped_count,
-          error_count
-        )
+    -- First, fetch all repositories in parallel
+    local fetch_promises = {}
+    for _, plugin in ipairs(plugins_to_update) do
+      local path = plugin:get_path()
+      table.insert(
+        fetch_promises,
+        Async.system({
+          'git',
+          '-C',
+          path,
+          'fetch',
+          '--quiet',
+          'origin',
+        })
       )
-    elseif error_count > 0 then
-      M.log('warn', string.format('No plugins updated, %d errors occurred.', error_count))
-    else
-      M.log('info', 'All plugins already up to date.')
     end
 
-    -- Close UI after a delay
-    Async.await(Async.delay(2000))
-    ui:close()
+    -- Wait for all fetches to complete
+    Async.await(Async.all(fetch_promises))
+
+    -- Now process actual updates with TaskQueue
+    local task_queue = TaskQueue.new(DEFAULT_SETTINGS.max_concurrent_tasks)
+
+    for _, plugin in ipairs(plugins_to_update) do
+      task_queue:enqueue(function(done)
+        Async.async(function()
+          local has_updates = Async.await(plugin:has_updates())
+
+          if has_updates then
+            plugin.status = STATUS.UPDATING
+            ui:update_entry(plugin.name, plugin.status, 'Updating...')
+            Async.await(plugin:update())
+          else
+            plugin.status = STATUS.UPDATED
+            ui:update_entry(plugin.name, plugin.status, 'Already up to date')
+          end
+
+          done()
+        end)()
+      end)
+    end
+
+    task_queue:on_complete(function()
+      M.log('info', 'Update completed')
+      Async.await(Async.delay(2000))
+      ui:close()
+    end)
   end)()
 end
 
