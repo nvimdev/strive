@@ -1375,7 +1375,13 @@ function M.update()
     M.log('info', 'Checking for updates...')
     local plugins_to_update = {}
 
-    for _, plugin in ipairs(plugins) do
+    local strive_plugin = Plugin.new({
+      name = 'nvimdev/strive',
+      plugin_name = 'strive',
+      is_lazy = true,
+    })
+
+    for _, plugin in ipairs(vim.list_extend(plugins, strive_plugin)) do
       if plugin.is_remote and not plugin.is_local then
         local installed = Async.await(plugin:is_installed())
         if installed then
