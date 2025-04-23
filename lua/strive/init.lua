@@ -2,7 +2,7 @@
 -- A lightweight, feature-rich plugin manager with support for lazy loading,
 -- dependencies, and asynchronous operations.
 
-local api, uv, if_nil, Iter, ffi = vim.api, vim.uv, vim.F.if_nil, vim.iter, require('ffi')
+local api, uv, if_nil, ffi = vim.api, vim.uv, vim.F.if_nil, require('ffi')
 
 -- =====================================================================
 -- 1. Configuration and Constants
@@ -40,6 +40,10 @@ local STATUS = {
   UPDATED = 'updated',
   ERROR = 'error',
 }
+
+local function isdir(dir)
+  return (uv.fs_stat(dir) or {}).type == 'directory'
+end
 
 -- =====================================================================
 -- 2. Async Utilities
@@ -146,7 +150,7 @@ function Async.await(promise)
   end
 
   promise(function(result)
-    vim.schedule(function()
+    Async.safe_schedule(function()
       local ok = coroutine.resume(co, result)
       if not ok then
         vim.notify(debug.traceback(co), vim.log.levels.ERROR)
@@ -172,7 +176,7 @@ function Async.try_await(promise)
   end
 
   promise(function(result)
-    vim.schedule(function()
+    Async.safe_schedule(function()
       local ok = coroutine.resume(co, result)
       if not ok then
         vim.notify(debug.traceback(co), vim.log.levels.ERROR)
@@ -193,7 +197,7 @@ function Async.async(func)
       end)
 
       if not status then
-        vim.schedule(function()
+        Async.safe_schedule(function()
           vim.notify('Async error: ' .. tostring(result), vim.log.levels.ERROR)
         end)
       end
@@ -204,7 +208,7 @@ function Async.async(func)
     local function step(...)
       local ok, err = coroutine.resume(co, ...)
       if not ok then
-        vim.schedule(function()
+        Async.safe_schedule(function()
           vim.notify('Coroutine error: ' .. debug.traceback(co, err), vim.log.levels.ERROR)
         end)
       end
@@ -299,6 +303,14 @@ function Async.scandir(dir)
       end
     end)
   end
+end
+
+function Async.safe_schedule(callback)
+  if not vim.in_fast_event() then
+    callback()
+    return
+  end
+  vim.schedule(callback)
 end
 
 -- =====================================================================
@@ -483,7 +495,7 @@ function ProgressWindow:update_entry(plugin_name, status, message)
 
   if self.visible then
     -- Schedule UI updates to run in the main event loop
-    vim.schedule(function()
+    Async.safe_schedule(function()
       self:refresh()
     end)
   end
@@ -630,12 +642,10 @@ function Plugin:is_installed()
 end
 
 local function load_opts(opt)
-  if opt then
-    if type(opt) == 'string' then
-      vim.cmd(opt)
-    elseif type(opt) == 'function' then
-      opt()
-    end
+  if type(opt) == 'string' then
+    vim.cmd(opt)
+  elseif type(opt) == 'function' then
+    opt()
   end
 end
 
@@ -651,7 +661,7 @@ function Plugin:packadd()
 end
 
 -- Load a plugin and its dependencies
-function Plugin:load()
+function Plugin:load(opts)
   if self.loaded then
     return true
   end
@@ -667,23 +677,29 @@ function Plugin:load()
   self.loaded = true
   vim.g.strive_loaded = vim.g.strive_loaded + 1
 
-  load_opts(self.init_opts)
+  if self.init_opts then
+    load_opts(self.init_opts)
+  end
 
   self:packadd()
-  self:load_scripts()
+  self:load_scripts(opts and opts.script_cb or nil)
 
   self:call_setup()
 
-  Iter(self.dependencies):map(function(d)
-    if not d.loaded then
-      d:load()
+  if #self.dependencies > 0 then
+    for _, dep in ipairs(self.dependencies) do
+      if not dep.loaded then
+        dep:load()
+      end
     end
-  end)
-
-  load_opts(self.config_opts)
+  end
+  if self.config_opts then
+    load_opts(self.config_opts)
+  end
   -- Update status
   self.status = STATUS.LOADED
 
+  pcall(api.nvim_del_augroup_by_name, 'strive_' .. self.plugin_name)
   return true
 end
 
@@ -691,6 +707,7 @@ end
 function Plugin:on(events)
   self.is_lazy = true
   self.events = type(events) ~= 'table' and { events } or events
+  local group = api.nvim_create_augroup('strive_' .. self.plugin_name, { clear = true })
 
   -- Create autocmds for each event
   for _, event in ipairs(self.events) do
@@ -700,10 +717,7 @@ function Plugin:on(events)
       event, pattern = t[1], t[2]
     end
     api.nvim_create_autocmd(event, {
-      group = api.nvim_create_augroup(
-        'strive_' .. self.plugin_name .. '_' .. event,
-        { clear = true }
-      ),
+      group = group,
       pattern = pattern,
       once = true,
       callback = function(args)
@@ -714,12 +728,10 @@ function Plugin:on(events)
           local event_data = args.data and vim.deepcopy(args.data) or {}
 
           -- Schedule the event emission to avoid nesting too deep
-          -- vim.schedule(function()
           api.nvim_exec_autocmds(event, {
             modeline = false,
             data = event_data,
           })
-          -- end)
         end
       end,
     })
@@ -733,7 +745,7 @@ function Plugin:ft(filetypes)
   self.is_lazy = true
   self.filetypes = type(filetypes) ~= 'table' and { filetypes } or filetypes
   api.nvim_create_autocmd('FileType', {
-    group = api.nvim_create_augroup('strive_' .. self.plugin_name .. '_ft', { clear = true }),
+    group = api.nvim_create_augroup('strive_' .. self.plugin_name, { clear = true }),
     pattern = self.filetypes,
     once = true,
     callback = function(args)
@@ -750,25 +762,33 @@ function Plugin:ft(filetypes)
   return self
 end
 
-function Plugin:load_scripts()
+function Plugin:load_scripts(callback)
   Async.async(function()
     local plugin_path = self:get_path()
     local plugin_dir = vim.fs.joinpath(plugin_path, 'plugin')
+    if not isdir(plugin_dir) then
+      return
+    end
 
     local result = Async.try_await(Async.scandir(plugin_dir))
-    if not result.success or not result.value or not result.value[2] then
+    if not result.success or not result.value then
       M.log('debug', string.format('Plugin directory not found: %s', plugin_dir))
       return
     end
 
     while true do
-      local name, type = uv.fs_scandir_next(result.value[2])
+      local name, type = uv.fs_scandir_next(result.value)
       if not name then
         break
       end
       if type == 'file' and (name:match('%.lua$') or name:match('%.vim$')) then
         local file_path = vim.fs.joinpath(plugin_dir, name)
-        vim.cmd('source ' .. vim.fn.fnameescape(file_path))
+        Async.safe_schedule(function()
+          vim.cmd('source ' .. vim.fn.fnameescape(file_path))
+          if callback then
+            callback()
+          end
+        end)
       end
     end
   end)()
@@ -784,16 +804,17 @@ function Plugin:cmd(commands)
       pcall(api.nvim_del_user_command, cmd_name)
       local args = cmd_args.args ~= '' and ' ' .. cmd_args.args or ''
       local bang = cmd_args.bang and '!' or ''
-      self:load()
-      vim.schedule(function()
-        if vim.fn.exists(':' .. cmd_name) == 2 then
-          ---@diagnostic disable-next-line: param-type-mismatch
-          local ok, err = pcall(vim.cmd, cmd_name .. bang .. args)
-          if not ok then
-            vim.notify(string.format('execute %s wrong: %s', cmd_name, err), vim.log.levels.ERROR)
+      self:load({
+        script_cb = function()
+          if vim.fn.exists(':' .. cmd_name) == 2 then
+            ---@diagnostic disable-next-line: param-type-mismatch
+            local ok, err = pcall(vim.cmd, cmd_name .. bang .. args)
+            if not ok then
+              vim.notify(string.format('execute %s wrong: %s', cmd_name, err), vim.log.levels.ERROR)
+            end
           end
-        end
-      end)
+        end,
+      })
     end, {
       nargs = '*',
       bang = true,
@@ -898,7 +919,7 @@ function Plugin:theme(name)
   Async.async(function()
     local installed = Async.await(self:is_installed())
     if installed then
-      vim.schedule(function()
+      Async.safe_schedule(function()
         vim.opt.rtp:append(vim.fs.joinpath(START_DIR, self.plugin_name))
         vim.cmd.colorscheme(self.colorscheme)
       end)
@@ -974,7 +995,7 @@ function Plugin:install()
           lines = vim.split(lines, '\n', { trimempty = true })
 
           if #lines > 0 then
-            vim.schedule(function()
+            Async.safe_schedule(function()
               ui:update_entry(self.name, self.status, lines[#lines])
             end)
           end
@@ -1105,7 +1126,7 @@ function Plugin:update()
           lines = vim.split(lines, '\n', { trimempty = true })
 
           if #lines > 0 then
-            vim.schedule(function()
+            Async.safe_schedule(function()
               ui:update_entry(self.name, self.status, lines[#lines])
             end)
           end
@@ -1149,9 +1170,6 @@ function Plugin:install_with_retry()
     local url = ('https://github.com/%s'):format(self.name)
     local cmd = { 'git', 'clone', '--progress', url, path }
 
-    -- Ensure parent directory exists
-    vim.fn.mkdir(vim.fs.dirname(path), 'p')
-
     -- Use retry with the system command (3 retries with exponential backoff)
     local result = Async.try_await(Async.retry(function()
       return Async.system(cmd, {
@@ -1163,7 +1181,7 @@ function Plugin:install_with_retry()
             lines = vim.split(lines, '\n', { trimempty = true })
 
             if #lines > 0 then
-              vim.schedule(function()
+              Async.safe_schedule(function()
                 ui:update_entry(self.name, self.status, lines[#lines])
               end)
             end
@@ -1522,7 +1540,7 @@ local function setup_auto_install()
   -- When using strive in plugin folder
   if vim.v.vim_did_enter == 1 then
     -- UI has already initialized, schedule installation directly
-    vim.schedule(function()
+    Async.safe_schedule(function()
       M.log('debug', 'UI already initialized, installing plugins now')
       M.install()
     end)
@@ -1534,7 +1552,7 @@ local function setup_auto_install()
   api.nvim_create_autocmd('UIEnter', {
     group = api.nvim_create_augroup('strive_auto_install', { clear = true }),
     callback = function()
-      vim.schedule(function()
+      Async.safe_schedule(function()
         M.log('debug', 'UIEnter triggered, installing plugins')
         M.install()
       end)
