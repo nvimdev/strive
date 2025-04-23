@@ -62,6 +62,14 @@ function Result.failure(err)
   return setmetatable({ success = false, value = nil, error = err }, Result)
 end
 
+function Async.safe_schedule(callback)
+  if not vim.in_fast_event() then
+    callback()
+    return
+  end
+  vim.schedule(callback)
+end
+
 -- Wrap a function to return a promise
 function Async.wrap(func)
   return function(...)
@@ -150,7 +158,7 @@ function Async.await(promise)
   end
 
   promise(function(result)
-    Async.safe_schedule(function()
+    vim.schedule(function()
       local ok = coroutine.resume(co, result)
       if not ok then
         vim.notify(debug.traceback(co), vim.log.levels.ERROR)
@@ -176,7 +184,7 @@ function Async.try_await(promise)
   end
 
   promise(function(result)
-    Async.safe_schedule(function()
+    vim.schedule(function()
       local ok = coroutine.resume(co, result)
       if not ok then
         vim.notify(debug.traceback(co), vim.log.levels.ERROR)
@@ -208,7 +216,7 @@ function Async.async(func)
     local function step(...)
       local ok, err = coroutine.resume(co, ...)
       if not ok then
-        Async.safe_schedule(function()
+        vim.schedule(function()
           vim.notify('Coroutine error: ' .. debug.traceback(co, err), vim.log.levels.ERROR)
         end)
       end
@@ -303,14 +311,6 @@ function Async.scandir(dir)
       end
     end)
   end
-end
-
-function Async.safe_schedule(callback)
-  if not vim.in_fast_event() then
-    callback()
-    return
-  end
-  vim.schedule(callback)
 end
 
 -- =====================================================================
@@ -693,12 +693,12 @@ function Plugin:load(opts)
       end
     end
   end
+
   if self.config_opts then
     load_opts(self.config_opts)
   end
-  -- Update status
-  self.status = STATUS.LOADED
 
+  self.status = STATUS.LOADED
   pcall(api.nvim_del_augroup_by_name, 'strive_' .. self.plugin_name)
   return true
 end
