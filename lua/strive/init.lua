@@ -2,7 +2,7 @@
 -- A lightweight, feature-rich plugin manager with support for lazy loading,
 -- dependencies, and asynchronous operations.
 
-local api, uv, if_nil, ffi = vim.api, vim.uv, vim.F.if_nil, require('ffi')
+local api, uv, if_nil = vim.api, vim.uv, vim.F.if_nil
 
 -- =====================================================================
 -- 1. Configuration and Constants
@@ -1528,26 +1528,19 @@ function M.clean()
   end)()
 end
 
-ffi.cdef([[
-  typedef long time_t;
-  typedef int clockid_t;
-  typedef struct timespec {
-    time_t   tv_sec;
-    long     tv_nsec;
-  } timespec;
-  int clock_gettime(clockid_t clk_id, struct timespec *tp);
-]])
-
-local CLOCK_PROCESS_CPUTIME_ID = uv.os_uname().sysname:match('Darwin') and 12 or 2
-
+-- use uv instead of calling clock_time with ffi
 local function startuptime()
   if vim.g.strive_startup_time ~= nil then
     return
   end
-
-  local t = assert(ffi.new('timespec[?]', 1))
-  ffi.C.clock_gettime(CLOCK_PROCESS_CPUTIME_ID, t)
-  vim.g.strive_startup_time = tonumber(t[0].tv_sec) * 1e3 + tonumber(t[0].tv_nsec) / 1e6
+  vim.g.strive_startup_time = 0
+  local usage = vim.uv.getrusage()
+  if usage then
+    -- Calculate time in milliseconds (user + system time)
+    local user_time = (usage.utime.sec * 1000) + (usage.utime.usec / 1000)
+    local sys_time = (usage.stime.sec * 1000) + (usage.stime.usec / 1000)
+    vim.g.strive_startup_time = user_time + sys_time
+  end
 end
 
 -- Set up auto-install with better event handling
