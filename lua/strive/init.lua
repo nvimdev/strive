@@ -487,10 +487,14 @@ function ProgressWindow:update_entry(plugin_name, status, message)
   }
 
   if self.visible then
-    -- Schedule UI updates to run in the main event loop
-    vim.schedule(function()
+    -- Only schedule if we're not already in main thread
+    if vim.in_fast_event() then
+      vim.schedule(function()
+        self:refresh()
+      end)
+    else
       self:refresh()
-    end)
+    end
   end
 
   return self
@@ -788,20 +792,27 @@ function Plugin:load_scripts(callback)
       return
     end
 
+    -- Collect all scripts first
+    local scripts = {}
     while true do
       local name, type = uv.fs_scandir_next(result.value)
       if not name then
         break
       end
       if type == 'file' and (name:match('%.lua$') or name:match('%.vim$')) then
-        local file_path = vim.fs.joinpath(plugin_dir, name)
-        vim.schedule(function()
-          vim.cmd('source ' .. vim.fn.fnameescape(file_path))
-          if callback then
-            callback()
-          end
-        end)
+        table.insert(scripts, vim.fs.joinpath(plugin_dir, name))
       end
+    end
+
+    if #scripts > 0 then
+      vim.schedule(function()
+        for _, file_path in ipairs(scripts) do
+          vim.cmd('source ' .. vim.fn.fnameescape(file_path))
+        end
+        if callback then
+          callback()
+        end
+      end)
     end
   end)()
 end
