@@ -1091,7 +1091,7 @@ function Plugin:has_updates()
   end)()
 end
 
-function Plugin:update()
+function Plugin:update(skip_check)
   if self.is_local or not self.is_remote then
     return Async.wrap(function(cb)
       cb(true, 'skip')
@@ -1120,28 +1120,31 @@ function Plugin:update()
       return
     end
 
-    -- Check for updates
-    local updates_result = Async.try_await(self:has_updates())
-    local has_updates
+    -- Skip update check if requested
+    local has_updates = true
+    if not skip_check then
+      -- Check for updates
+      local updates_result = Async.try_await(self:has_updates())
 
-    if updates_result.success then
-      has_updates = updates_result.value
-    else
-      self.status = STATUS.ERROR
-      ui:update_entry(
-        self.name,
-        self.status,
-        'Error checking updates: ' .. tostring(updates_result.error)
-      )
-      callback(false, 'error_checking_updates')
-      return
-    end
+      if updates_result.success then
+        has_updates = updates_result.value
+      else
+        self.status = STATUS.ERROR
+        ui:update_entry(
+          self.name,
+          self.status,
+          'Error checking updates: ' .. tostring(updates_result.error)
+        )
+        callback(false, 'error_checking_updates')
+        return
+      end
 
-    if not has_updates then
-      self.status = STATUS.UPDATED
-      ui:update_entry(self.name, self.status, 'Already up to date')
-      callback(true, 'up_to_date')
-      return
+      if not has_updates then
+        self.status = STATUS.UPDATED
+        ui:update_entry(self.name, self.status, 'Already up to date')
+        callback(true, 'up_to_date')
+        return
+      end
     end
 
     -- Update the plugin
@@ -1172,7 +1175,16 @@ function Plugin:update()
     -- Handle result
     if result.success then
       self.status = STATUS.UPDATED
-      ui:update_entry(self.name, self.status, 'Update complete')
+      local stdout = result.value.stdout or ''
+      local update_info = 'Update complete'
+      local commit_info = stdout:match('([a-f0-9]+)%.%.([a-f0-9]+)')
+      if stdout:find('Already up to date') then
+        update_info = 'Already up to date'
+      elseif commit_info then
+        update_info = string.format('Updated to %s', stdout:match('([a-f0-9]+)%.%.([a-f0-9]+)'))
+      end
+
+      ui:update_entry(self.name, self.status, update_info)
       callback(true, 'updated')
     else
       self.status = STATUS.ERROR
@@ -1396,39 +1408,27 @@ function M.update()
     end
 
     ui:open()
-
-    -- First, fetch all repositories in parallel
-    local fetch_promises = {}
+    -- Initialize UI entries for all plugins immediately
     for _, plugin in ipairs(plugins_to_update) do
-      local path = plugin:get_path()
-      table.insert(
-        fetch_promises,
-        Async.system({
-          'git',
-          '-C',
-          path,
-          'fetch',
-          '--quiet',
-          'origin',
-        })
-      )
+      plugin.status = STATUS.PENDING
+      ui:update_entry(plugin.name, plugin.status, 'Queued for update...')
     end
 
-    -- Wait for all fetches to complete
-    Async.await(Async.all(fetch_promises))
-
-    -- Now process actual updates with TaskQueue
+    -- Process updates through TaskQueue
     local task_queue = TaskQueue.new(DEFAULT_SETTINGS.max_concurrent_tasks)
 
     for _, plugin in ipairs(plugins_to_update) do
       task_queue:enqueue(function(done)
         Async.async(function()
+          plugin.status = STATUS.UPDATING
+          ui:update_entry(plugin.name, plugin.status, 'Checking for updates...')
+
+          -- Process one plugin at a time with UI feedback
           local has_updates = Async.await(plugin:has_updates())
 
           if has_updates then
-            plugin.status = STATUS.UPDATING
-            ui:update_entry(plugin.name, plugin.status, 'Updating...')
-            Async.await(plugin:update())
+            ui:update_entry(plugin.name, plugin.status, 'Updates available, pulling changes...')
+            Async.await(plugin:update(true)) -- Skip redundant check
           else
             plugin.status = STATUS.UPDATED
             ui:update_entry(plugin.name, plugin.status, 'Already up to date')
