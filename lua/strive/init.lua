@@ -727,6 +727,8 @@ function Plugin:load(opts)
   return true
 end
 
+local event_plugins = {}
+
 -- Set up lazy loading on specific events
 function Plugin:on(events)
   self.is_lazy = true
@@ -740,25 +742,45 @@ function Plugin:on(events)
       local t = vim.split(event, '%s')
       event, pattern = t[1], t[2]
     end
-    api.nvim_create_autocmd(event, {
-      group = group,
-      pattern = pattern,
-      once = true,
-      callback = function(args)
-        -- Don't re-emit the event if we've already loaded the plugin
-        if not self.loaded and self:load() then
-          -- We need to re-emit the event, but carefully to avoid nesting too deep
-          -- Instead of exec_autocmds, trigger the event using a different mechanism
-          local event_data = args.data and vim.deepcopy(args.data) or {}
 
-          -- Schedule the event emission to avoid nesting too deep
-          api.nvim_exec_autocmds(event, {
-            modeline = false,
-            data = event_data,
-          })
-        end
-      end,
-    })
+    -- Create key for event patterns
+    local event_key = event .. (pattern and ('_' .. pattern) or '')
+
+    -- Initialize table for this event if needed
+    event_plugins[event_key] = event_plugins[event_key] or {}
+    table.insert(event_plugins[event_key], self)
+
+    -- Only create the autocmd if this is the first plugin for this event
+    if #event_plugins[event_key] == 1 then
+      api.nvim_create_autocmd(event, {
+        group = group,
+        pattern = pattern,
+        once = true,
+        callback = function(args)
+          -- Load all plugins for this event at once
+          local any_loaded = false
+          local plugins_to_load = vim.deepcopy(event_plugins[event_key])
+
+          for _, plugin in ipairs(plugins_to_load) do
+            if not plugin.loaded and plugin:load() then
+              any_loaded = true
+            end
+          end
+
+          -- Only re-emit the event once after all plugins are loaded
+          if any_loaded then
+            -- Avoid deep nesting by scheduling
+            vim.schedule(function()
+              api.nvim_exec_autocmds(event, {
+                modeline = false,
+                pattern = pattern,
+                data = args.data and vim.deepcopy(args.data) or {},
+              })
+            end)
+          end
+        end,
+      })
+    end
   end
 
   return self
