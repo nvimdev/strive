@@ -1405,7 +1405,7 @@ function M.update()
       is_remote = true,
     })
 
-    for _, plugin in ipairs(vim.list_extend(plugins, strive_plugin)) do
+    for _, plugin in ipairs(vim.list_extend(plugins, { strive_plugin })) do
       if plugin.is_remote and not plugin.is_local then
         local installed = Async.await(plugin:is_installed())
         if installed then
