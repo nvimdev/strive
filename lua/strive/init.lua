@@ -685,26 +685,34 @@ function Plugin:load(opts)
   self.status = STATUS.LOADED
   pcall(api.nvim_del_augroup_by_name, 'strive_' .. self.plugin_name)
 
+  local deps_count = #self.dependencies
   -- Load dependencies in parallel
-  if #self.dependencies > 0 then
+  if deps_count > 0 then
     Async.async(function()
+      -- Pre-allocate the array with exact size
       local dependency_promises = {}
-      for _, dep in ipairs(self.dependencies) do
+      local promise_count = 0
+
+      -- Avoid creating unnecessary closures
+      for i = 1, deps_count do
+        local dep = self.dependencies[i]
         if not dep.loaded then
-          table.insert(dependency_promises, function(cb)
+          promise_count = promise_count + 1
+          dependency_promises[promise_count] = function(cb)
+            -- Reuse the same async function for all dependencies
             Async.async(function()
-              local success = dep:load()
-              cb(Result.success(success))
+              cb(Result.success(dep:load()))
             end)()
-          end)
+          end
         end
       end
 
-      if #dependency_promises > 0 then
+      -- Only await if we have promises
+      if promise_count > 0 then
         Async.await(Async.all(dependency_promises))
       end
 
-      -- Run config after all dependencies are loaded
+      -- Run config after dependencies are loaded
       if self.config_opts then
         load_opts(self.config_opts)
       end
