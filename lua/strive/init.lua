@@ -1402,6 +1402,7 @@ function M.update()
       name = 'nvimdev/strive',
       plugin_name = 'strive',
       is_lazy = true,
+      is_remote = true,
     })
 
     for _, plugin in ipairs(vim.list_extend(plugins, strive_plugin)) do
