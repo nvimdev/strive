@@ -297,11 +297,7 @@ end
 function Async.scandir(dir)
   return function(callback)
     uv.fs_scandir(dir, function(err, handle)
-      if err then
-        callback(Result.failure(err))
-      else
-        callback(Result.success(handle))
-      end
+      callback(err and Result.failure(err) or Result.success(handle))
     end)
   end
 end
@@ -417,14 +413,15 @@ end
 -- Set key mappings for the window
 function ProgressWindow:set_keymaps()
   local opts = { buffer = self.bufnr }
+  local mapset = vim.keymap.set
   for _, key in ipairs({ 'q', '<ESC>' }) do
-    vim.keymap.set('n', key, function()
+    mapset('n', key, function()
       self:close()
     end, opts)
   end
 
   -- Add other useful keymaps
-  vim.keymap.set('n', 'r', function()
+  mapset('n', 'r', function()
     self:refresh()
   end, vim.tbl_extend('force', opts, { desc = 'Refresh display' }))
 end
@@ -573,9 +570,7 @@ Plugin.__index = Plugin
 
 -- Create a new plugin instance
 function Plugin.new(spec)
-  if type(spec) == 'string' then
-    spec = { name = spec }
-  end
+  spec = type(spec) == 'string' and { name = spec } or spec
 
   -- Extract plugin name from repo
   local name = vim.fs.normalize(spec.name)
@@ -624,10 +619,9 @@ end
 
 -- Get the plugin installation path
 function Plugin:get_path()
-  if not self.is_local and not self.local_path then
-    return vim.fs.joinpath(self.is_lazy and OPT_DIR or START_DIR, self.plugin_name)
-  end
-  return vim.fs.joinpath(self.local_path, self.plugin_name) or self.name
+  return (not self.is_local and not self.local_path)
+      and vim.fs.joinpath(self.is_lazy and OPT_DIR or START_DIR, self.plugin_name)
+    or (vim.fs.joinpath(self.local_path, self.plugin_name) or self.name)
 end
 
 -- Check if plugin is installed (async version)
@@ -639,12 +633,9 @@ function Plugin:is_installed()
   end)()
 end
 
+-- Only string or function can be used for init and config opt
 local function load_opts(opt)
-  if type(opt) == 'string' then
-    vim.cmd(opt)
-  elseif type(opt) == 'function' then
-    opt()
-  end
+  return type(opt) == 'string' and vim.cmd(opt) or opt()
 end
 
 function Plugin:packadd()
