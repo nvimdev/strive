@@ -1481,69 +1481,104 @@ function M.update()
 end
 
 -- Clean unused plugins
+-- Clean unused plugins
 function M.clean()
   Async.async(function()
+    M.log('debug', 'Starting clean operation')
+
     -- Get all installed plugins in both directories
     local installed_dirs = {}
 
-    local function scan_dir(dir)
-      -- Use pcall for error handling
-      local ok, handle = pcall(vim.uv.fs_scandir, dir)
-      if not ok or not handle then
-        M.log('error', string.format('Error scanning directory %s: %s', dir, tostring(handle)))
+    local function scan_directory(dir)
+      M.log('debug', string.format('Scanning directory: %s', dir))
+      if not isdir(dir) then
+        M.log('debug', string.format('Directory does not exist: %s', dir))
+        return
+      end
+
+      local result = Async.try_await(Async.scandir(dir))
+      if not result.success or not result.value then
+        M.log(
+          'error',
+          string.format('Error scanning directory %s: %s', dir, tostring(result.error))
+        )
         return
       end
 
       while true do
-        local name, type = vim.uv.fs_scandir_next(handle)
+        local name, type = uv.fs_scandir_next(result.value)
         if not name then
           break
         end
 
         if type == 'directory' then
+          local full_path = vim.fs.joinpath(dir, name)
+          M.log('debug', string.format('Found installed plugin: %s at %s', name, full_path))
           installed_dirs[name] = dir
         end
       end
     end
 
-    scan_dir(START_DIR)
-    scan_dir(OPT_DIR)
+    -- Scan both start and opt directories
+    scan_directory(START_DIR)
+    scan_directory(OPT_DIR)
 
     -- Find plugins not in our registry
     local to_remove = {}
     for name, dir in pairs(installed_dirs) do
       local found = false
       for _, plugin in ipairs(plugins) do
+        M.log(
+          'debug',
+          string.format('Comparing %s with registered plugin %s', name, plugin.plugin_name)
+        )
         if plugin.plugin_name == name then
           found = true
+          M.log('debug', string.format('Plugin %s is registered, keeping it', name))
           break
         end
       end
 
       if not found then
+        M.log('debug', string.format('Plugin %s is not registered, marking for removal', name))
         table.insert(to_remove, { name = name, dir = dir })
       end
     end
 
-    -- Remove unused plugins with proper error handling
+    -- Show plugins that will be removed
     if #to_remove > 0 then
-      M.log('info', string.format('Cleaning %d unused plugins...', #to_remove))
+      M.log('info', string.format('Found %d unused plugins to clean:', #to_remove))
+      for _, item in ipairs(to_remove) do
+        local path = vim.fs.joinpath(item.dir, item.name)
+        M.log('info', string.format('Will remove: %s', path))
+      end
 
+      -- Perform the actual deletion
+      M.log('info', 'Starting deletion process...')
+
+      -- Process deletions one by one to ensure completion
       for _, item in ipairs(to_remove) do
         local path = vim.fs.joinpath(item.dir, item.name)
         M.log('info', string.format('Removing %s', path))
 
-        -- Use async delete with error handling
-        local ok, err = pcall(function()
-          vim.fn.delete(path, 'rf')
+        -- Use vim.fn.delete synchronously to ensure completion
+        local ok, result_or_err = pcall(function()
+          return vim.fn.delete(path, 'rf')
         end)
 
         if not ok then
-          M.log('error', string.format('Error deleting %s: %s', path, tostring(err)))
+          M.log('error', string.format('Error deleting %s: %s', path, tostring(result_or_err)))
+        elseif result_or_err ~= 0 then
+          M.log('error', string.format('Failed to delete %s, return code: %d', path, result_or_err))
+        else
+          M.log('info', string.format('Successfully removed %s', path))
         end
+
+        -- Add a small delay to ensure file system operations complete
+        Async.await(Async.delay(100))
       end
 
-      M.log('info', 'Clean complete.')
+      M.log('info', 'Clean operation complete.')
     else
       M.log('info', 'No unused plugins to clean.')
     end
