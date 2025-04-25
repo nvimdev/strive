@@ -1481,7 +1481,6 @@ function M.update()
 end
 
 -- Clean unused plugins
--- Clean unused plugins
 function M.clean()
   Async.async(function()
     M.log('debug', 'Starting clean operation')
@@ -1527,7 +1526,7 @@ function M.clean()
     local to_remove = {}
     for name, dir in pairs(installed_dirs) do
       local found = false
-      for _, plugin in ipairs(plugins) do
+      for _, plugin in ipairs(vim.list_extend(plugins, { plugin_name = 'strive' })) do
         M.log(
           'debug',
           string.format('Comparing %s with registered plugin %s', name, plugin.plugin_name)
