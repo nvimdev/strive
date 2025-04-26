@@ -771,7 +771,6 @@ function Plugin:on(events)
               api.nvim_exec_autocmds(event, {
                 buffer = args.buf,
                 modeline = false,
-                pattern = pattern,
                 data = args.data,
               })
             end)
