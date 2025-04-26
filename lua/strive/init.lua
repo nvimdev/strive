@@ -53,14 +53,19 @@ local Async = {}
 
 -- Result type to handle errors properly
 local Result = {}
-Result.__index = Result
+
+local success_meta = { success = true, error = nil }
+local failure_meta = { success = false, value = nil }
+
+success_meta.__index = success_meta
+failure_meta.__index = failure_meta
 
 function Result.success(value)
-  return setmetatable({ success = true, value = value, error = nil }, Result)
+  return setmetatable({ value = value }, success_meta)
 end
 
 function Result.failure(err)
-  return setmetatable({ success = false, value = nil, error = err }, Result)
+  return setmetatable({ error = err }, failure_meta)
 end
 
 -- Wrap a function to return a promise
@@ -785,13 +790,9 @@ function Plugin:ft(filetypes)
     group = api.nvim_create_augroup('strive_' .. self.plugin_name, { clear = true }),
     pattern = self.filetypes,
     once = true,
-    callback = function(args)
-      -- Don't re-emit the event if we've already loaded the plugin
-      if not self.loaded and self:load() then
-        api.nvim_exec_autocmds('FileType', {
-          modeline = false,
-          pattern = args.match,
-        })
+    callback = function()
+      if not self.loaded then
+        self:load()
       end
     end,
   })
