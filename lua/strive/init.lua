@@ -712,11 +712,19 @@ function Plugin:load(opts)
       if self.config_opts then
         load_opts(self.config_opts)
       end
+
+      if opts and opts.done_cb then
+        opts.done_cb()
+      end
     end)()
   else
     -- No dependencies, run config immediately
     if self.config_opts then
       load_opts(self.config_opts)
+    end
+
+    if opts and opts.done_cb then
+      opts.done_cb()
     end
   end
 
@@ -729,7 +737,6 @@ local event_plugins = {}
 function Plugin:on(events)
   self.is_lazy = true
   self.events = type(events) ~= 'table' and { events } or events
-  local group = api.nvim_create_augroup('strive_' .. self.plugin_name, { clear = true })
 
   -- Create autocmds for each event
   for _, event in ipairs(self.events) do
@@ -740,37 +747,68 @@ function Plugin:on(events)
     end
 
     -- Create key for event patterns
-    local event_key = event .. (pattern and ('_' .. pattern) or '')
+    local key = event .. (pattern and ('_' .. pattern) or '')
 
-    -- Initialize table for this event if needed
-    event_plugins[event_key] = event_plugins[event_key] or {}
-    table.insert(event_plugins[event_key], self)
+    event_plugins[key] = event_plugins[key]
+      or {
+        plugins = {},
+        id = nil,
+        loading = false,
+        pending_loads = 0,
+      }
 
-    -- Only create the autocmd if this is the first plugin for this event
-    if #event_plugins[event_key] == 1 then
+    local t = event_plugins[key]
+    table.insert(t.plugins, self)
+
+    if not t.id then
+      t.id = api.nvim_create_augroup('strive_' .. key, { clear = true })
+
       api.nvim_create_autocmd(event, {
-        group = group,
+        group = t.id,
         pattern = pattern,
         once = true,
         callback = function(args)
-          -- Load all plugins for this event at once
-          local any_loaded = false
-          for _, plugin in ipairs(event_plugins[event_key]) do
-            if not plugin.loaded and plugin:load() then
-              any_loaded = true
+          -- Prevent recursive event firing
+          if t.loading then
+            return
+          end
+          t.loading = true
+
+          -- Track which plugins need loading
+          local plugins_to_load = {}
+          for _, plugin in ipairs(t.plugins) do
+            if not plugin.loaded then
+              table.insert(plugins_to_load, plugin)
             end
           end
 
-          -- Only re-emit the event once after all plugins are loaded
-          if any_loaded then
-            -- Avoid deep nesting by scheduling
-            vim.schedule(function()
-              api.nvim_exec_autocmds(event, {
-                modeline = false,
-                pattern = pattern,
-                data = args.data,
-              })
-            end)
+          if #plugins_to_load == 0 then
+            t.loading = false
+            return
+          end
+          t.pending_loads = #plugins_to_load
+
+          local function on_plugin_loaded()
+            t.pending_loads = t.pending_loads - 1
+
+            -- If all plugins are loaded, re-emit the event
+            if t.pending_loads == 0 then
+              vim.schedule(function()
+                t.loading = false
+                api.nvim_exec_autocmds(event, {
+                  modeline = false,
+                  pattern = pattern,
+                  data = args.data,
+                })
+              end)
+            end
+          end
+
+          -- Load all plugins with completion callback
+          for _, plugin in ipairs(plugins_to_load) do
+            plugin:load({
+              done_cb = on_plugin_loaded,
+            })
           end
         end,
       })
