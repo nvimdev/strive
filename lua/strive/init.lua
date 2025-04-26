@@ -2,7 +2,7 @@
 -- A lightweight, feature-rich plugin manager with support for lazy loading,
 -- dependencies, and asynchronous operations.
 
-local api, uv, if_nil = vim.api, vim.uv, vim.F.if_nil
+local api, uv = vim.api, vim.uv
 
 -- =====================================================================
 -- 1. Configuration and Constants
@@ -22,12 +22,12 @@ vim.g.strive_loaded = 0
 vim.g.strive_count = 0
 
 local DEFAULT_SETTINGS = {
-  max_concurrent_tasks = if_nil(vim.g.strive_max_concurrent_tasks, 10),
-  auto_install = if_nil(vim.g.strive_auto_install, true),
-  log_level = if_nil(vim.g.strive_log_level, 'warn'),
-  git_timeout = if_nil(vim.g.strive_git_timeout, 60000),
-  git_depth = if_nil(vim.g.strive_git_depth, 1),
-  install_retry = if_nil(vim.g.strive_install_with_retry, false),
+  max_concurrent_tasks = vim.g.strive_max_concurrent_tasks or 10,
+  auto_install = vim.g.strive_auto_install or true,
+  log_level = vim.g.strive_log_level or 'warn',
+  git_timeout = vim.g.strive_git_timeout or 60000,
+  git_depth = vim.g.strive_git_depth or 1,
+  install_retry = vim.g.strive_install_with_retry or false,
 }
 
 -- Plugin status constants
