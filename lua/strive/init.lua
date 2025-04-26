@@ -755,9 +755,7 @@ function Plugin:on(events)
         callback = function(args)
           -- Load all plugins for this event at once
           local any_loaded = false
-          local plugins_to_load = vim.deepcopy(event_plugins[event_key])
-
-          for _, plugin in ipairs(plugins_to_load) do
+          for _, plugin in ipairs(event_plugins[event_key]) do
             if not plugin.loaded and plugin:load() then
               any_loaded = true
             end
@@ -770,7 +768,7 @@ function Plugin:on(events)
               api.nvim_exec_autocmds(event, {
                 modeline = false,
                 pattern = pattern,
-                data = args.data and vim.deepcopy(args.data) or {},
+                data = args.data,
               })
             end)
           end
