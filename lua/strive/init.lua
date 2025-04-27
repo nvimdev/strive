@@ -533,14 +533,14 @@ function ProgressWindow:refresh()
   local width = api.nvim_win_get_width(self.winid)
   -- Header
   table.insert(lines, string.rep('=', width))
-  table.insert(lines, string.format('%-30s %-10s %s', 'Plugin', 'Status', 'Message'))
+  table.insert(lines, string.format('%-40s %-10s %s', 'Plugin', 'Status', 'Message'))
   table.insert(lines, string.rep('=', width))
   -- Plugin entries
   for _, name in ipairs(sorted_plugins) do
     local entry = self.entries[name]
     table.insert(
       lines,
-      string.format('%-30s %-10s %s', name:sub(1, 30), entry.status, entry.message or '')
+      string.format('%-40s %-10s %s', name:sub(1, 40), entry.status, entry.message or '')
     )
   end
 
