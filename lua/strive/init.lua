@@ -729,8 +729,6 @@ end
 function Plugin:on(events)
   self.is_lazy = true
   self.events = type(events) ~= 'table' and { events } or events
-
-  -- Create a single augroup for this plugin
   self.group_id = api.nvim_create_augroup('strive_' .. self.plugin_name, { clear = true })
 
   -- Create autocmds for each event within this group
