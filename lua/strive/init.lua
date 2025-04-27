@@ -679,7 +679,9 @@ function Plugin:load(opts)
   self:call_setup()
 
   self.status = STATUS.LOADED
-  pcall(api.nvim_del_autocmd, self.group_id)
+  if self.group_id then
+    api.nvim_del_augroup_by_id(self.group_id)
+  end
 
   local deps_count = #self.dependencies
   -- Load dependencies in parallel
