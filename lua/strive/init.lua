@@ -679,7 +679,7 @@ function Plugin:load(opts)
   self:call_setup()
 
   self.status = STATUS.LOADED
-  pcall(api.nvim_del_augroup_by_name, 'strive_' .. self.plugin_name)
+  pcall(api.nvim_del_autocmd, self.group_id)
 
   local deps_count = #self.dependencies
   -- Load dependencies in parallel
@@ -723,14 +723,15 @@ function Plugin:load(opts)
   return true
 end
 
-local event_plugins = {}
-
 -- Set up lazy loading on specific events
 function Plugin:on(events)
   self.is_lazy = true
   self.events = type(events) ~= 'table' and { events } or events
 
-  -- Create autocmds for each event
+  -- Create a single augroup for this plugin
+  self.group_id = api.nvim_create_augroup('strive_' .. self.plugin_name, { clear = true })
+
+  -- Create autocmds for each event within this group
   for _, event in ipairs(self.events) do
     local pattern
     if event:find('%s') then
@@ -738,46 +739,23 @@ function Plugin:on(events)
       event, pattern = t[1], t[2]
     end
 
-    -- Create key for event patterns
-    local key = event .. (pattern and ('_' .. pattern) or '')
-
-    event_plugins[key] = event_plugins[key] or {
-      id = nil,
-      plugins = {},
-    }
-    local t = event_plugins[key]
-    table.insert(t.plugins, self)
-
-    if not t.id then
-      t.id = api.nvim_create_augroup('strive_' .. key, { clear = true })
-      api.nvim_create_autocmd(event, {
-        group = t.id,
-        pattern = pattern,
-        once = true,
-        callback = function(args)
-          -- Load all plugins for this event at once
-          local any_loaded = false
-          for _, plugin in ipairs(event_plugins[key].plugins) do
-            if not plugin.loaded and plugin:load() then
-              any_loaded = true
-            end
-          end
-          t = nil
-
-          -- Only re-emit the event once after all plugins are loaded
-          if any_loaded then
-            -- Avoid deep nesting by scheduling
-            vim.schedule(function()
-              api.nvim_exec_autocmds(event, {
-                buffer = args.buf,
-                modeline = false,
-                data = args.data,
-              })
-            end)
-          end
-        end,
-      })
-    end
+    api.nvim_create_autocmd(event, {
+      group = self.group_id,
+      pattern = pattern,
+      once = true,
+      callback = function(args)
+        if not self.loaded and self:load() then
+          -- Re-emit the event once after plugin is loaded
+          vim.schedule(function()
+            api.nvim_exec_autocmds(event, {
+              buffer = args.buf,
+              modeline = false,
+              data = args.data,
+            })
+          end)
+        end
+      end,
+    })
   end
 
   return self
