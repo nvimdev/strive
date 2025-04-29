@@ -679,8 +679,10 @@ function Plugin:load(opts)
   self:call_setup()
 
   self.status = STATUS.LOADED
-  if self.group_id then
-    api.nvim_del_augroup_by_id(self.group_id)
+  if self.group_ids then
+    for _, id in ipairs(self.group_ids) do
+      api.nvim_del_augroup_by_id(id)
+    end
   end
 
   local deps_count = #self.dependencies
@@ -729,7 +731,9 @@ end
 function Plugin:on(events)
   self.is_lazy = true
   self.events = type(events) ~= 'table' and { events } or events
-  self.group_id = api.nvim_create_augroup('strive_' .. self.plugin_name, { clear = true })
+  self.group_ids = self.group_id or {}
+  local id = api.nvim_create_augroup('strive_' .. self.plugin_name, { clear = true })
+  table.insert(self.group_ids, id)
 
   -- Create autocmds for each event within this group
   for _, event in ipairs(self.events) do
@@ -740,7 +744,7 @@ function Plugin:on(events)
     end
 
     api.nvim_create_autocmd(event, {
-      group = self.group_id,
+      group = id,
       pattern = pattern,
       once = true,
       callback = function(args)
@@ -765,11 +769,14 @@ end
 function Plugin:ft(filetypes)
   self.is_lazy = true
   self.filetypes = type(filetypes) ~= 'table' and { filetypes } or filetypes
+  self.group_ids = self.group_ids or {}
+  local id = api.nvim_create_augroup('strive_' .. self.plugin_name, { clear = true })
+  self.group_ids[#self.group_ids + 1] = id
   api.nvim_create_autocmd('FileType', {
-    group = api.nvim_create_augroup('strive_' .. self.plugin_name, { clear = true }),
+    group = id,
     pattern = self.filetypes,
     once = true,
-    callback = function()
+    callback = function(args)
       if not self.loaded then
         self:load()
       end
