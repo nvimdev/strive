@@ -1509,11 +1509,19 @@ function M.clean()
     scan_directory(START_DIR)
     scan_directory(OPT_DIR)
 
+    local strive_plugin = Plugin.new({
+      name = 'nvimdev/strive',
+      plugin_name = 'strive',
+      is_lazy = true,
+      is_remote = true,
+    })
+
+    local p = vim.list_extend(plugins, { strive_plugin })
     -- Find plugins not in our registry
     local to_remove = {}
     for name, dir in pairs(installed_dirs) do
       local found = false
-      for _, plugin in ipairs(vim.list_extend(plugins, { plugin_name = 'strive' })) do
+      for _, plugin in ipairs(p) do
         M.log(
           'debug',
           string.format('Comparing %s with registered plugin %s', name, plugin.plugin_name)
