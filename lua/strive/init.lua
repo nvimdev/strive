@@ -675,7 +675,7 @@ function Plugin:load(opts)
   end
 
   self:packadd()
-  self:load_scripts(opts and opts.script_cb or nil)
+  self:load_scripts((opts and opts.script_cb) and opts.script_cb or nil)
   self:call_setup()
 
   self.status = STATUS.LOADED
@@ -776,7 +776,7 @@ function Plugin:ft(filetypes)
     group = id,
     pattern = self.filetypes,
     once = true,
-    callback = function(args)
+    callback = function()
       if not self.loaded then
         self:load()
       end
@@ -808,14 +808,14 @@ function Plugin:load_scripts(callback)
         break
       end
       if type == 'file' and (name:match('%.lua$') or name:match('%.vim$')) then
-        table.insert(scripts, vim.fs.joinpath(plugin_dir, name))
+        scripts[#scripts + 1] = vim.fs.joinpath(plugin_dir, name)
       end
     end
 
     if #scripts > 0 then
       vim.schedule(function()
         for _, file_path in ipairs(scripts) do
-          vim.cmd('source ' .. vim.fn.fnameescape(file_path))
+          vim.cmd.source(vim.fn.fnameescape(file_path))
         end
         if callback then
           callback()
