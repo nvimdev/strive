@@ -307,6 +307,16 @@ function Async.scandir(dir)
   end
 end
 
+function Async.safe_schedule(callback)
+  if vim.in_fast_event() then
+    vim.schedule(function()
+      callback()
+    end)
+  else
+    callback()
+  end
+end
+
 -- =====================================================================
 -- 3. Task Queue
 -- =====================================================================
@@ -643,17 +653,6 @@ local function load_opts(opt)
   return type(opt) == 'string' and vim.cmd(opt) or opt()
 end
 
-function Plugin:packadd()
-  -- If it's a lazy-loaded plugin, add it
-  if self.is_lazy then
-    if not self.is_local then
-      vim.cmd.packadd(self.plugin_name)
-    else
-      vim.opt.rtp:append(self:get_path())
-    end
-  end
-end
-
 -- Load a plugin and its dependencies
 function Plugin:load(opts)
   if self.loaded then
@@ -674,7 +673,21 @@ function Plugin:load(opts)
     load_opts(self.init_opts)
   end
 
-  self:packadd()
+  if self.is_local then
+    -- For local plugins, add directly to runtimepath
+    local plugin_path = self:get_path()
+    vim.opt.rtp:append(plugin_path)
+
+    -- Also check for and add the 'after' directory
+    local after_path = vim.fs.joinpath(plugin_path, 'after')
+    if isdir(after_path) then
+      vim.opt.rtp:append(after_path)
+    end
+  elseif self.is_lazy then
+    -- For non-local lazy plugins, use packadd
+    vim.cmd.packadd(self.plugin_name)
+  end
+
   self:load_scripts((opts and opts.script_cb) and opts.script_cb or nil)
   self:call_setup()
 
@@ -813,7 +826,7 @@ function Plugin:load_scripts(callback)
     end
 
     if #scripts > 0 then
-      vim.schedule(function()
+      Async.safe_schedule(function()
         for _, file_path in ipairs(scripts) do
           vim.cmd.source(vim.fn.fnameescape(file_path))
         end
