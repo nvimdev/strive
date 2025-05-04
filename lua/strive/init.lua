@@ -654,7 +654,7 @@ local function load_opts(opt)
 end
 
 -- Load a plugin and its dependencies
-function Plugin:load(opts)
+function Plugin:load()
   if self.loaded then
     return true
   end
@@ -683,12 +683,12 @@ function Plugin:load(opts)
     if isdir(after_path) then
       vim.opt.rtp:append(after_path)
     end
+    self:load_scripts()
   elseif self.is_lazy then
     -- For non-local lazy plugins, use packadd
     vim.cmd.packadd(self.plugin_name)
   end
 
-  self:load_scripts((opts and opts.script_cb) and opts.script_cb or nil)
   self:call_setup()
 
   self.status = STATUS.LOADED
@@ -848,17 +848,15 @@ function Plugin:cmd(commands)
       pcall(api.nvim_del_user_command, cmd_name)
       local args = cmd_args.args ~= '' and ' ' .. cmd_args.args or ''
       local bang = cmd_args.bang and '!' or ''
-      self:load({
-        script_cb = function()
-          if vim.fn.exists(':' .. cmd_name) == 2 then
-            ---@diagnostic disable-next-line: param-type-mismatch
-            local ok, err = pcall(vim.cmd, cmd_name .. bang .. args)
-            if not ok then
-              vim.notify(string.format('execute %s wrong: %s', cmd_name, err), vim.log.levels.ERROR)
-            end
-          end
-        end,
-      })
+      self:load()
+
+      if vim.fn.exists(':' .. cmd_name) == 2 then
+        ---@diagnostic disable-next-line: param-type-mismatch
+        local ok, err = pcall(vim.cmd, cmd_name .. bang .. args)
+        if not ok then
+          vim.notify(string.format('execute %s wrong: %s', cmd_name, err), vim.log.levels.ERROR)
+        end
+      end
     end, {
       nargs = '*',
       bang = true,
