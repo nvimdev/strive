@@ -860,7 +860,6 @@ function Plugin:cmd(commands)
     api.nvim_create_user_command(name, function(opts)
       -- Remove this command to avoid recursion
       pcall(api.nvim_del_user_command, name)
-
       local args = opts.args ~= '' and (' ' .. opts.args) or ''
       local bang = opts.bang
 
@@ -870,9 +869,10 @@ function Plugin:cmd(commands)
             execute(name, bang, args)
           end,
         })
-      else
-        execute(name, bang, args)
+        return
       end
+      self:load()
+      execute(name, bang, args)
     end, {
       nargs = '*',
       bang = true,
