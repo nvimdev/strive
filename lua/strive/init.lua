@@ -654,7 +654,7 @@ local function load_opts(opt)
 end
 
 -- Load a plugin and its dependencies
-function Plugin:load()
+function Plugin:load(opts)
   if self.loaded then
     return true
   end
@@ -683,7 +683,7 @@ function Plugin:load()
     if isdir(after_path) then
       vim.opt.rtp:append(after_path)
     end
-    self:load_scripts()
+    self:load_scripts((opts and opts.script_cb) and opts.script_cb or nil)
   elseif self.is_lazy then
     -- For non-local lazy plugins, use packadd
     vim.cmd.packadd(self.plugin_name)
@@ -841,37 +841,51 @@ end
 -- Set up lazy loading for specific commands
 function Plugin:cmd(commands)
   self.is_lazy = true
-  self.commands = type(commands) ~= 'table' and { commands } or commands
+  self.commands = type(commands) == 'table' and commands or { commands }
 
-  for _, cmd_name in ipairs(self.commands) do
-    api.nvim_create_user_command(cmd_name, function(cmd_args)
-      pcall(api.nvim_del_user_command, cmd_name)
-      local args = cmd_args.args ~= '' and ' ' .. cmd_args.args or ''
-      local bang = cmd_args.bang and '!' or ''
-      self:load()
+  -- Helper to execute a given command string
+  local function execute(name, bang, args)
+    if vim.fn.exists(':' .. name) ~= 2 then
+      return
+    end
+    local cmd_str = name .. (bang and '!' or '') .. (args or '')
+    ---@diagnostic disable-next-line: param-type-mismatch
+    local ok, err = pcall(vim.cmd, cmd_str)
+    if not ok then
+      vim.notify(string.format('execute %s wrong: %s', name, err), vim.log.levels.ERROR)
+    end
+  end
 
-      if vim.fn.exists(':' .. cmd_name) == 2 then
-        ---@diagnostic disable-next-line: param-type-mismatch
-        local ok, err = pcall(vim.cmd, cmd_name .. bang .. args)
-        if not ok then
-          vim.notify(string.format('execute %s wrong: %s', cmd_name, err), vim.log.levels.ERROR)
-        end
+  for _, name in ipairs(self.commands) do
+    api.nvim_create_user_command(name, function(opts)
+      -- Remove this command to avoid recursion
+      pcall(api.nvim_del_user_command, name)
+
+      local args = opts.args ~= '' and (' ' .. opts.args) or ''
+      local bang = opts.bang
+
+      if self.is_local then
+        self:load({
+          script_cb = function()
+            execute(name, bang, args)
+          end,
+        })
+      else
+        execute(name, bang, args)
       end
     end, {
       nargs = '*',
       bang = true,
-      complete = function(_, cmd_line, _)
+      complete = function(_, cmd_line)
         if not self.loaded then
           self:load()
         end
-        local ok, result = pcall(function()
-          return vim.fn.getcompletion(cmd_line, 'cmdline')
-        end)
+        local ok, result = pcall(vim.fn.getcompletion, cmd_line, 'cmdline')
         return ok and result or {}
       end,
     })
 
-    table.insert(self.user_commands, cmd_name)
+    table.insert(self.user_commands, name)
   end
 
   return self
