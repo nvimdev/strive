@@ -499,14 +499,9 @@ function ProgressWindow:update_entry(plugin_name, status, message)
   }
 
   if self.visible then
-    -- Only schedule if we're not already in main thread
-    if vim.in_fast_event() then
-      vim.schedule(function()
-        self:refresh()
-      end)
-    else
+    Async.safe_schedule(function()
       self:refresh()
-    end
+    end)
   end
 
   return self
@@ -653,89 +648,127 @@ local function load_opts(opt)
   return type(opt) == 'string' and vim.cmd(opt) or opt()
 end
 
+-- return a Promise
+function Plugin:load_scripts()
+  return function(callback)
+    local plugin_path = self:get_path()
+    local plugin_dir = vim.fs.joinpath(plugin_path, 'plugin')
+
+    if not isdir(plugin_dir) then
+      callback(Result.success(false))
+      return
+    end
+
+    Async.scandir(plugin_dir)(function(result)
+      if not result.success or not result.value then
+        M.log('debug', string.format('Plugin directory not found: %s', plugin_dir))
+        callback(Result.success(false))
+        return
+      end
+
+      local scripts = {}
+      while true do
+        local name, type = uv.fs_scandir_next(result.value)
+        if not name then
+          break
+        end
+        if type == 'file' and (name:match('%.lua$') or name:match('%.vim$')) then
+          scripts[#scripts + 1] = vim.fs.joinpath(plugin_dir, name)
+        end
+      end
+
+      if #scripts > 0 then
+        Async.safe_schedule(function()
+          for _, file_path in ipairs(scripts) do
+            vim.cmd.source(vim.fn.fnameescape(file_path))
+          end
+          callback(Result.success(true))
+        end)
+      else
+        callback(Result.success(false))
+      end
+    end)
+  end
+end
+
 -- Load a plugin and its dependencies
-function Plugin:load(opts)
+function Plugin:load()
   if self.loaded then
     return true
   end
 
-  -- Check if plugin exists
-  local stat = uv.fs_stat(self:get_path())
-  if not stat or stat.type ~= 'directory' then
-    return false
-  end
-
-  -- Set loaded flag to prevent recursive loading
-  self.loaded = true
-  vim.g.strive_loaded = vim.g.strive_loaded + 1
-
-  if self.init_opts then
-    load_opts(self.init_opts)
-  end
-
-  if self.is_local then
-    -- For local plugins, add directly to runtimepath
+  Async.async(function()
     local plugin_path = self:get_path()
-    vim.opt.rtp:append(plugin_path)
-
-    -- Also check for and add the 'after' directory
-    local after_path = vim.fs.joinpath(plugin_path, 'after')
-    if isdir(after_path) then
-      vim.opt.rtp:append(after_path)
+    local stat = uv.fs_stat(plugin_path)
+    if not stat or stat.type ~= 'directory' then
+      self.status = STATUS.ERROR
+      return false
     end
-    self:load_scripts((opts and opts.script_cb) and opts.script_cb or nil)
-  elseif self.is_lazy then
-    -- For non-local lazy plugins, use packadd
-    vim.cmd.packadd(self.plugin_name)
-  end
 
-  self:call_setup()
+    self.loaded = true
+    vim.g.strive_loaded = vim.g.strive_loaded + 1
 
-  self.status = STATUS.LOADED
-  if self.group_ids then
-    for _, id in ipairs(self.group_ids) do
-      api.nvim_del_augroup_by_id(id)
+    if self.init_opts then
+      load_opts(self.init_opts)
     end
-  end
 
-  local deps_count = #self.dependencies
-  -- Load dependencies in parallel
-  if deps_count > 0 then
-    Async.async(function()
-      -- Pre-allocate the array with exact size
-      local dependency_promises = {}
-      local promise_count = 0
+    if self.is_local then
+      vim.opt.rtp:append(plugin_path)
 
-      -- Avoid creating unnecessary closures
-      for i = 1, deps_count do
-        local dep = self.dependencies[i]
-        if not dep.loaded then
-          promise_count = promise_count + 1
-          dependency_promises[promise_count] = function(cb)
-            -- Reuse the same async function for all dependencies
-            Async.async(function()
-              cb(Result.success(dep:load()))
-            end)()
-          end
-        end
+      local after_path = vim.fs.joinpath(plugin_path, 'after')
+      if isdir(after_path) then
+        vim.opt.rtp:append(after_path)
       end
 
-      -- Only await if we have promises
-      if promise_count > 0 then
-        Async.await(Async.all(dependency_promises))
+      local result = Async.try_await(self:load_scripts())
+      if result.error then
+        M.log(
+          'error',
+          string.format('Failed to load scripts for %s: %s', self.name, tostring(result.error))
+        )
+        return
+      end
+    elseif self.is_lazy then
+      vim.cmd.packadd(self.plugin_name)
+    end
+
+    self:call_setup()
+
+    self.status = STATUS.LOADED
+    if self.group_ids and #self.group_ids > 0 then
+      for _, id in ipairs(self.group_ids) do
+        api.nvim_del_augroup_by_id(id)
+      end
+      self.group_ids = {}
+    end
+
+    local deps_to_load = {}
+    for _, dep in ipairs(self.dependencies) do
+      if not dep.loaded then
+        table.insert(deps_to_load, dep)
+      end
+    end
+
+    if #deps_to_load > 0 then
+      local promises = {}
+      for _, dep in ipairs(deps_to_load) do
+        table.insert(promises, function(cb)
+          Async.async(function()
+            dep:load()
+            cb(Result.success(true))
+          end)()
+        end)
       end
 
-      -- Run config after dependencies are loaded
-      if self.config_opts then
-        load_opts(self.config_opts)
-      end
-    end)()
-  else
-    -- No dependencies, run config immediately
+      Async.await(Async.all(promises))
+    end
+
     if self.config_opts then
       load_opts(self.config_opts)
     end
-  end
+
+    return true
+  end)()
 
   return true
 end
@@ -799,45 +832,6 @@ function Plugin:ft(filetypes)
   return self
 end
 
-function Plugin:load_scripts(callback)
-  Async.async(function()
-    local plugin_path = self:get_path()
-    local plugin_dir = vim.fs.joinpath(plugin_path, 'plugin')
-    if not isdir(plugin_dir) then
-      return
-    end
-
-    local result = Async.try_await(Async.scandir(plugin_dir))
-    if not result.success or not result.value then
-      M.log('debug', string.format('Plugin directory not found: %s', plugin_dir))
-      return
-    end
-
-    -- Collect all scripts first
-    local scripts = {}
-    while true do
-      local name, type = uv.fs_scandir_next(result.value)
-      if not name then
-        break
-      end
-      if type == 'file' and (name:match('%.lua$') or name:match('%.vim$')) then
-        scripts[#scripts + 1] = vim.fs.joinpath(plugin_dir, name)
-      end
-    end
-
-    if #scripts > 0 then
-      Async.safe_schedule(function()
-        for _, file_path in ipairs(scripts) do
-          vim.cmd.source(vim.fn.fnameescape(file_path))
-        end
-        if callback then
-          callback()
-        end
-      end)
-    end
-  end)()
-end
-
 -- Set up lazy loading for specific commands
 function Plugin:cmd(commands)
   self.is_lazy = true
@@ -863,16 +857,12 @@ function Plugin:cmd(commands)
       local args = opts.args ~= '' and (' ' .. opts.args) or ''
       local bang = opts.bang
 
-      if self.is_local then
-        self:load({
-          script_cb = function()
-            execute(name, bang, args)
-          end,
-        })
-        return
-      end
-      self:load()
-      execute(name, bang, args)
+      Async.async(function()
+        self:load()
+        Async.safe_schedule(function()
+          execute(name, bang, args)
+        end)
+      end)()
     end, {
       nargs = '*',
       bang = true,
@@ -1563,44 +1553,57 @@ function M.clean()
         table.insert(to_remove, { name = name, dir = dir })
       end
     end
+    if #to_remove == 0 then
+      vim.notify('[Strive]: no plugins to remove')
+    end
 
     -- Show plugins that will be removed
-    if #to_remove > 0 then
-      M.log('info', string.format('Found %d unused plugins to clean:', #to_remove))
-      for _, item in ipairs(to_remove) do
-        local path = vim.fs.joinpath(item.dir, item.name)
-        M.log('info', string.format('Will remove: %s', path))
-      end
-
-      -- Perform the actual deletion
-      M.log('info', 'Starting deletion process...')
-
-      -- Process deletions one by one to ensure completion
-      for _, item in ipairs(to_remove) do
-        local path = vim.fs.joinpath(item.dir, item.name)
-        M.log('info', string.format('Removing %s', path))
-
-        -- Use vim.fn.delete synchronously to ensure completion
-        local ok, result_or_err = pcall(function()
-          return vim.fn.delete(path, 'rf')
-        end)
-
-        if not ok then
-          M.log('error', string.format('Error deleting %s: %s', path, tostring(result_or_err)))
-        elseif result_or_err ~= 0 then
-          M.log('error', string.format('Failed to delete %s, return code: %d', path, result_or_err))
-        else
-          M.log('info', string.format('Successfully removed %s', path))
-        end
-
-        -- Add a small delay to ensure file system operations complete
-        Async.await(Async.delay(100))
-      end
-
-      M.log('info', 'Clean operation complete.')
-    else
-      M.log('info', 'No unused plugins to clean.')
+    M.log('info', string.format('Found %d unused plugins to clean:', #to_remove))
+    ui:open()
+    for _, item in ipairs(to_remove) do
+      local path = vim.fs.joinpath(item.dir, item.name)
+      M.log('info', string.format('Will remove: %s', path))
+      ui:update_entry(item.name, 'PENDING', 'Marked to removal')
     end
+
+    -- Perform the actual deletion
+    M.log('info', 'Starting deletion process...')
+
+    vim.ui.select(
+      { 'Yes', 'No' },
+      { prompt = string.format('Remove %d unused plugins?', #to_remove) },
+      function(choice)
+        if choice and choice:lower():match('^y') then
+          -- Process deletions through TaskQueue
+          local task_queue = TaskQueue.new(DEFAULT_SETTINGS.max_concurrent_tasks)
+
+          for _, item in ipairs(to_remove) do
+            task_queue:enqueue(function(done)
+              Async.async(function()
+                local path = vim.fs.joinpath(item.dir, item.name)
+                ui:update_entry(item.name, 'CLEANING', 'Removing...')
+
+                -- Delete and handle errors
+                local ok, result = pcall(vim.fn.delete, path, 'rf')
+                if not ok or result ~= 0 then
+                  ui:update_entry(item.name, 'ERROR', 'Failed to remove')
+                else
+                  ui:update_entry(item.name, 'REMOVED', 'Successfully removed')
+                end
+                done()
+              end)()
+            end)
+          end
+
+          task_queue:on_complete(function()
+            Async.await(Async.delay(2000))
+            ui:close()
+          end)
+        else
+          ui:close()
+        end
+      end
+    )
   end)()
 end
 
