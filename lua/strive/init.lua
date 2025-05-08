@@ -2,7 +2,7 @@
 -- A lightweight, feature-rich plugin manager with support for lazy loading,
 -- dependencies, and asynchronous operations.
 
-local api, uv = vim.api, vim.uv
+local api, uv, fs, joinpath = vim.api, vim.uv, vim.fs, vim.fs.joinpath
 
 -- =====================================================================
 -- 1. Configuration and Constants
@@ -13,11 +13,11 @@ local plugin_map = {}
 
 -- Data paths
 local data_dir = vim.fn.stdpath('data')
-local START_DIR = vim.fs.joinpath(data_dir, 'site', 'pack', 'strive', 'start')
-local OPT_DIR = vim.fs.joinpath(data_dir, 'site', 'pack', 'strive', 'opt')
+local START_DIR = joinpath(data_dir, 'site', 'pack', 'strive', 'start')
+local OPT_DIR = joinpath(data_dir, 'site', 'pack', 'strive', 'opt')
 
 -- Add to packpath
-vim.opt.packpath:prepend(vim.fs.joinpath(data_dir, 'site'))
+vim.opt.packpath:prepend(joinpath(data_dir, 'site'))
 vim.g.strive_loaded = 0
 vim.g.strive_count = 0
 
@@ -583,7 +583,7 @@ function Plugin.new(spec)
   spec = type(spec) == 'string' and { name = spec } or spec
 
   -- Extract plugin name from repo
-  local name = vim.fs.normalize(spec.name)
+  local name = fs.normalize(spec.name)
   if vim.startswith(name, vim.env.HOME) then
     spec.is_local = true
   end
@@ -630,8 +630,8 @@ end
 -- Get the plugin installation path
 function Plugin:get_path()
   return (not self.is_local and not self.local_path)
-      and vim.fs.joinpath(self.is_lazy and OPT_DIR or START_DIR, self.plugin_name)
-    or (vim.fs.joinpath(self.local_path, self.plugin_name) or self.name)
+      and joinpath(self.is_lazy and OPT_DIR or START_DIR, self.plugin_name)
+    or (joinpath(self.local_path, self.plugin_name) or self.name)
 end
 
 -- Check if plugin is installed (async version)
@@ -652,7 +652,7 @@ end
 function Plugin:load_scripts()
   return function(callback)
     local plugin_path = self:get_path()
-    local plugin_dir = vim.fs.joinpath(plugin_path, 'plugin')
+    local plugin_dir = joinpath(plugin_path, 'plugin')
 
     if not isdir(plugin_dir) then
       callback(Result.success(false))
@@ -673,7 +673,7 @@ function Plugin:load_scripts()
           break
         end
         if type == 'file' and (name:match('%.lua$') or name:match('%.vim$')) then
-          scripts[#scripts + 1] = vim.fs.joinpath(plugin_dir, name)
+          scripts[#scripts + 1] = joinpath(plugin_dir, name)
         end
       end
 
@@ -715,7 +715,7 @@ function Plugin:load()
     if self.is_local then
       vim.opt.rtp:append(plugin_path)
 
-      local after_path = vim.fs.joinpath(plugin_path, 'after')
+      local after_path = joinpath(plugin_path, 'after')
       if isdir(after_path) then
         vim.opt.rtp:append(after_path)
       end
@@ -928,7 +928,7 @@ end
 -- Mark plugin as a development plugin
 function Plugin:load_path(path)
   self.is_local = true
-  self.local_path = vim.fs.normalize(path)
+  self.local_path = fs.normalize(path)
   self.is_remote = false
   return self
 end
@@ -966,7 +966,7 @@ function Plugin:theme(name)
     local installed = Async.await(self:is_installed())
     if installed then
       vim.schedule(function()
-        vim.opt.rtp:append(vim.fs.joinpath(START_DIR, self.plugin_name))
+        vim.opt.rtp:append(joinpath(START_DIR, self.plugin_name))
         vim.cmd.colorscheme(self.colorscheme)
       end)
     end
@@ -1513,7 +1513,7 @@ function M.clean()
         end
 
         if type == 'directory' then
-          local full_path = vim.fs.joinpath(dir, name)
+          local full_path = joinpath(dir, name)
           M.log('debug', string.format('Found installed plugin: %s at %s', name, full_path))
           installed_dirs[name] = dir
         end
@@ -1561,7 +1561,7 @@ function M.clean()
     M.log('info', string.format('Found %d unused plugins to clean:', #to_remove))
     ui:open()
     for _, item in ipairs(to_remove) do
-      local path = vim.fs.joinpath(item.dir, item.name)
+      local path = joinpath(item.dir, item.name)
       M.log('info', string.format('Will remove: %s', path))
       ui:update_entry(item.name, 'PENDING', 'Marked to removal')
     end
@@ -1580,7 +1580,7 @@ function M.clean()
           for _, item in ipairs(to_remove) do
             task_queue:enqueue(function(done)
               Async.async(function()
-                local path = vim.fs.joinpath(item.dir, item.name)
+                local path = joinpath(item.dir, item.name)
                 ui:update_entry(item.name, 'CLEANING', 'Removing...')
 
                 -- Delete and handle errors
