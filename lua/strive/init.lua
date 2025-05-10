@@ -705,9 +705,6 @@ function Plugin:load()
       return false
     end
 
-    self.loaded = true
-    vim.g.strive_loaded = vim.g.strive_loaded + 1
-
     if self.init_opts then
       load_opts(self.init_opts)
     end
@@ -731,6 +728,9 @@ function Plugin:load()
     elseif self.is_lazy then
       vim.cmd.packadd(self.plugin_name)
     end
+
+    self.loaded = true
+    vim.g.strive_loaded = vim.g.strive_loaded + 1
 
     self:call_setup()
 
@@ -927,6 +927,7 @@ end
 
 -- Mark plugin as a development plugin
 function Plugin:load_path(path)
+  path = path or vim.g.strive_dev_path
   self.is_local = true
   self.local_path = fs.normalize(path)
   self.is_remote = false
