@@ -793,16 +793,9 @@ function Plugin:on(events)
       group = id,
       pattern = pattern,
       once = true,
-      callback = function(args)
-        if not self.loaded and self:load() then
-          -- Re-emit the event once after plugin is loaded
-          vim.schedule(function()
-            api.nvim_exec_autocmds(event, {
-              buffer = args.buf,
-              modeline = false,
-              data = args.data,
-            })
-          end)
+      callback = function()
+        if not self.loaded then
+          self:load()
         end
       end,
     })
@@ -822,9 +815,34 @@ function Plugin:ft(filetypes)
     group = id,
     pattern = self.filetypes,
     once = true,
-    callback = function()
-      if not self.loaded then
-        self:load()
+    callback = function(args)
+      if not self.loaded and self:load() then
+        local augroup_name = nil
+        if self.plugin_name:find('lspconfig', 1, true) then
+          augroup_name = 'nvim.lsp.enable'
+        else
+          local res = api.nvim_exec2('autocmd FileType', { output = true })
+          if not res.output then
+            return
+          end
+          res = { unpack(vim.split(res.output, '\n'), 1) }
+          for i, item in ipairs(res) do
+            if item:find(self.plugin_name, 1, true) then
+              augroup_name = res[i - 1]:match('^%s*(%S+)')
+            end
+          end
+        end
+
+        if augroup_name then
+          vim.schedule(function()
+            api.nvim_exec_autocmds('FileType', {
+              group = augroup_name,
+              buffer = args.buf,
+              data = args.data,
+              modeline = false,
+            })
+          end)
+        end
       end
     end,
   })
