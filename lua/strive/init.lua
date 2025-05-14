@@ -877,6 +877,9 @@ function Plugin:cmd(commands)
 
       Async.async(function()
         self:load()
+        if self.is_local then
+          Async.await(Async.delay(5))
+        end
         Async.safe_schedule(function()
           execute(name, bang, args)
         end)
