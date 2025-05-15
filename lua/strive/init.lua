@@ -13,8 +13,7 @@ local plugin_map = {}
 
 -- Data paths
 local data_dir = vim.fn.stdpath('data')
-local START_DIR = joinpath(data_dir, 'site', 'pack', 'strive', 'start')
-local OPT_DIR = joinpath(data_dir, 'site', 'pack', 'strive', 'opt')
+local PACK_DIR = joinpath(data_dir, 'strive')
 
 -- Add to packpath
 vim.opt.packpath:prepend(joinpath(data_dir, 'site'))
@@ -629,8 +628,7 @@ end
 
 -- Get the plugin installation path
 function Plugin:get_path()
-  return (not self.is_local and not self.local_path)
-      and joinpath(self.is_lazy and OPT_DIR or START_DIR, self.plugin_name)
+  return (not self.is_local and not self.local_path) and joinpath(PACK_DIR, self.plugin_name)
     or (joinpath(self.local_path, self.plugin_name) or self.name)
 end
 
@@ -692,7 +690,7 @@ function Plugin:load_scripts()
 end
 
 -- Load a plugin and its dependencies
-function Plugin:load()
+function Plugin:load(do_action, callback)
   if self.loaded then
     return true
   end
@@ -709,24 +707,20 @@ function Plugin:load()
       load_opts(self.init_opts)
     end
 
-    if self.is_local then
-      vim.opt.rtp:append(plugin_path)
+    vim.opt.rtp:append(plugin_path)
 
-      local after_path = joinpath(plugin_path, 'after')
-      if isdir(after_path) then
-        vim.opt.rtp:append(after_path)
-      end
+    local after_path = joinpath(plugin_path, 'after')
+    if isdir(after_path) then
+      vim.opt.rtp:append(after_path)
+    end
 
-      local result = Async.try_await(self:load_scripts())
-      if result.error then
-        M.log(
-          'error',
-          string.format('Failed to load scripts for %s: %s', self.name, tostring(result.error))
-        )
-        return
-      end
-    elseif self.is_lazy then
-      vim.cmd.packadd(self.plugin_name)
+    local result = Async.try_await(self:load_scripts())
+    if result.error then
+      M.log(
+        'error',
+        string.format('Failed to load scripts for %s: %s', self.name, tostring(result.error))
+      )
+      return
     end
 
     self.loaded = true
@@ -765,6 +759,14 @@ function Plugin:load()
 
     if self.config_opts then
       load_opts(self.config_opts)
+    end
+
+    if do_action and self.run_action then
+      vim.cmd(self.run_action)
+    end
+
+    if callback then
+      callback()
     end
 
     return true
@@ -815,34 +817,9 @@ function Plugin:ft(filetypes)
     group = id,
     pattern = self.filetypes,
     once = true,
-    callback = function(args)
-      if not self.loaded and self:load() then
-        local augroup_name = nil
-        if self.plugin_name:find('lspconfig', 1, true) then
-          augroup_name = 'nvim.lsp.enable'
-        else
-          local res = api.nvim_exec2('autocmd FileType', { output = true })
-          if not res.output then
-            return
-          end
-          res = { unpack(vim.split(res.output, '\n'), 1) }
-          for i, item in ipairs(res) do
-            if item:find(self.plugin_name, 1, true) then
-              augroup_name = res[i - 1]:match('^%s*(%S+)')
-            end
-          end
-        end
-
-        if augroup_name then
-          vim.schedule(function()
-            api.nvim_exec_autocmds('FileType', {
-              group = augroup_name,
-              buffer = args.buf,
-              data = args.data,
-              modeline = false,
-            })
-          end)
-        end
+    callback = function()
+      if not self.loaded then
+        self:load()
       end
     end,
   })
@@ -873,17 +850,9 @@ function Plugin:cmd(commands)
       -- Remove this command to avoid recursion
       pcall(api.nvim_del_user_command, name)
       local args = opts.args ~= '' and (' ' .. opts.args) or ''
-      local bang = opts.bang
-
-      Async.async(function()
-        self:load()
-        if self.is_local then
-          Async.await(Async.delay(5))
-        end
-        Async.safe_schedule(function()
-          execute(name, bang, args)
-        end)
-      end)()
+      self:load(false, function()
+        execute(name, opts.bang, args)
+      end)
     end, {
       nargs = '*',
       bang = true,
@@ -988,7 +957,7 @@ function Plugin:theme(name)
     local installed = Async.await(self:is_installed())
     if installed then
       vim.schedule(function()
-        vim.opt.rtp:append(joinpath(START_DIR, self.plugin_name))
+        vim.opt.rtp:append(joinpath(PACK_DIR, self.plugin_name))
         vim.cmd.colorscheme(self.colorscheme)
       end)
     end
@@ -1087,8 +1056,7 @@ function Plugin:install()
 
       -- Run build command if specified
       if self.run_action then
-        self:load()
-        vim.cmd(self.run_action)
+        self:load(true)
       end
     else
       self.status = STATUS.ERROR
@@ -1305,8 +1273,7 @@ function Plugin:install_with_retry()
 
       -- Run command if specified
       if self.run_action then
-        self:load()
-        vim.cmd(self.run_action)
+        self:load(true)
       end
     else
       self.status = STATUS.ERROR
@@ -1543,7 +1510,7 @@ function M.clean()
     end
 
     -- Scan both start and opt directories
-    scan_directory(START_DIR)
+    scan_directory(PACK_DIR)
     scan_directory(OPT_DIR)
 
     local strive_plugin = Plugin.new({
@@ -1668,7 +1635,7 @@ local function setup_auto_install()
       end)
       startuptime()
     end,
-    once = true, -- Only trigger once to avoid recursion
+    once = true,
   })
 end
 
