@@ -607,7 +607,7 @@ function Plugin.new(spec)
     events = {}, -- Events to trigger loading
     filetypes = {}, -- Filetypes to trigger loading
     commands = {}, -- Commands to trigger loading
-    keys = {}, -- Keys to trigger loading
+    mappings = {}, -- Keys to trigger loading
 
     -- Configuration
     setup_opts = spec.setup or {}, -- Options for plugin setup()
@@ -924,9 +924,9 @@ end
 -- Set up lazy loading for specific keymaps
 function Plugin:keys(mappings)
   self.is_lazy = true
-  self.keys = type(mappings) ~= 'table' and { mappings } or mappings
+  self.mappings = type(mappings) ~= 'table' and { mappings } or mappings
 
-  for _, mapping in ipairs(self.keys) do
+  for _, mapping in ipairs(self.mappings) do
     local mode, lhs, rhs, opts
 
     if type(mapping) == 'table' then
