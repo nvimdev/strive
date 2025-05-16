@@ -846,12 +846,8 @@ function Plugin:ft(filetypes)
             end
             if item:find(self.plugin_name, 1, true) then
               local data = _split(item, '%s')
-              if data[1] == '*' or data[1] == vim.bo[args.buf].filetype then
-                local au_id = data[3]:match('(%d+):')
-                if not au_id then
-                  return
-                end
-                local g = res[group_start]:match('^(.-)%s+FileType$')
+              local g = res[group_start]:match('^(.-)%s+FileType$')
+              if g and (data[1] == '*' or data[1] == vim.bo[args.buf].filetype) then
                 api.nvim_exec_autocmds('FileType', {
                   group = g,
                   modeline = false,
