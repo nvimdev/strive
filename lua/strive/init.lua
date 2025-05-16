@@ -607,7 +607,7 @@ function Plugin.new(spec)
     events = {}, -- Events to trigger loading
     filetypes = {}, -- Filetypes to trigger loading
     commands = {}, -- Commands to trigger loading
-    keys = {}, -- Keys to trigger loading
+    mappings = {}, -- Keys to trigger loading
 
     -- Configuration
     setup_opts = spec.setup or {}, -- Options for plugin setup()
@@ -924,29 +924,34 @@ end
 -- Set up lazy loading for specific keymaps
 function Plugin:keys(mappings)
   self.is_lazy = true
-  self.keys = type(mappings) ~= 'table' and { mappings } or mappings
+  self.mappings = type(mappings) ~= 'table' and { mappings } or mappings
 
-  for _, mapping in ipairs(self.keys) do
+  for _, mapping in ipairs(self.mappings) do
     local mode, lhs, rhs, opts
 
     if type(mapping) == 'table' then
       mode = mapping[1] or 'n'
       lhs = mapping[2]
-      rhs = mapping[3] or function() end
+      rhs = mapping[3]
       opts = mapping[4] or {}
     else
       mode, lhs = 'n', mapping
-      rhs = function() end
       opts = {}
     end
 
     -- Create a keymap that loads the plugin first
     vim.keymap.set(mode, lhs, function()
-      if self:load() and type(rhs) == 'function' then
-        rhs()
-      elseif self:load() and type(rhs) == 'string' then
-        -- If rhs is a string command
-        vim.cmd(rhs)
+      if type(rhs) == 'function' then
+        self:load(nil, rhs)
+      elseif type(rhs) == 'string' then
+        self:load(nil, function() vim.cmd(rhs) end)
+      elseif type(rhs) == 'nil' then
+        -- If rhs not specified, it should be defined in plugin config
+        -- In this case, we need to pass a callback
+        self:load(nil, function()
+          vim.schedule(function()
+            vim.fn.feedkeys(lhs)
+          end) end)
       end
     end, opts)
   end
