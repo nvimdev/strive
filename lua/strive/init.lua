@@ -714,13 +714,16 @@ function Plugin:load(do_action, callback)
       vim.opt.rtp:append(after_path)
     end
 
-    local result = Async.try_await(self:load_scripts())
-    if result.error then
-      M.log(
-        'error',
-        string.format('Failed to load scripts for %s: %s', self.name, tostring(result.error))
-      )
-      return
+    local plugin_dir = joinpath(plugin_path, 'plugin')
+    if isdir(plugin_dir) then
+      local result = Async.try_await(self:load_scripts())
+      if result.error then
+        M.log(
+          'error',
+          string.format('Failed to load scripts for %s: %s', self.name, tostring(result.error))
+        )
+        return
+      end
     end
 
     self.loaded = true
