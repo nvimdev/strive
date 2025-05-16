@@ -13,7 +13,7 @@ local plugin_map = {}
 
 -- Data paths
 local data_dir = vim.fn.stdpath('data')
-local PACK_DIR = joinpath(data_dir, 'strive')
+local PACK_DIR = joinpath(data_dir, 'strive.nvim')
 
 -- Add to packpath
 vim.opt.packpath:prepend(joinpath(data_dir, 'site'))
