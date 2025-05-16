@@ -1650,7 +1650,7 @@ local function startuptime()
 end
 
 -- Set up auto-install with better event handling
-local function setup_auto_install()
+if DEFAULT_SETTINGS.auto_install then
   -- Check if Neovim startup is already complete
   -- When using strive in plugin folder
   if vim.v.vim_did_enter == 1 then
@@ -1662,30 +1662,20 @@ local function setup_auto_install()
     startuptime()
     return
   end
-
-  -- UI has not initialized yet, register for UIEnter event
-  api.nvim_create_autocmd('UIEnter', {
-    group = api.nvim_create_augroup('strive', { clear = false }),
-    callback = function()
-      vim.schedule(function()
-        M.log('debug', 'UIEnter triggered, installing plugins')
-        M.install()
-      end)
-      startuptime()
-    end,
-    once = true,
-  })
-end
-
--- Setup auto-install if enabled
-if DEFAULT_SETTINGS.auto_install then
-  setup_auto_install()
 end
 
 api.nvim_create_autocmd('UIEnter', {
   group = api.nvim_create_augroup('strive', { clear = false }),
   once = true,
   callback = function()
+    if DEFAULT_SETTINGS.auto_install then
+      vim.schedule(function()
+        M.log('debug', 'UIEnter triggered, installing plugins')
+        M.install()
+      end)
+      startuptime()
+    end
+
     vim.schedule(function()
       api.nvim_exec_autocmds('User', {
         pattern = 'StriveDone',
