@@ -785,6 +785,7 @@ function Plugin:on(events)
 
   -- Create autocmds for each event within this group
   for _, event in ipairs(self.events) do
+    event = event == 'StriveDone' and 'User StriveDone' or event
     local pattern
     if event:find('%s') then
       local t = vim.split(event, '%s')
@@ -806,6 +807,16 @@ function Plugin:on(events)
   return self
 end
 
+local function _split(s, sep)
+  local t = {}
+  for c in vim.gsplit(s, sep, { trimempty = true }) do
+    if #c > 0 then
+      table.insert(t, c)
+    end
+  end
+  return t
+end
+
 -- Set up lazy loading for specific filetypes
 function Plugin:ft(filetypes)
   self.is_lazy = true
@@ -817,9 +828,38 @@ function Plugin:ft(filetypes)
     group = id,
     pattern = self.filetypes,
     once = true,
-    callback = function()
+    callback = function(args)
       if not self.loaded then
-        self:load()
+        return self:load(false, function()
+          local res = api.nvim_exec2('autocmd FileType', { output = true })
+          if not res.output then
+            return
+          end
+          res = { unpack(vim.split(res.output, '\n'), 1) }
+          local group_start = nil
+          for i, item in ipairs(res) do
+            if item:find('FileType$') then
+              group_start = i
+            end
+            if item:find(self.plugin_name, 1, true) then
+              local data = _split(item, '%s')
+              if data[1] == '*' or data[1] == vim.bo[args.buf].filetype then
+                local au_id = data[3]:match('(%d+):')
+                if not au_id then
+                  return
+                end
+                local g = res[group_start]:match('^(.-)%s+FileType$')
+                api.nvim_exec_autocmds('FileType', {
+                  group = g,
+                  modeline = false,
+                  buffer = args.buf,
+                  data = args.data,
+                })
+                break
+              end
+            end
+          end
+        end)
       end
     end,
   })
@@ -858,7 +898,7 @@ function Plugin:cmd(commands)
       bang = true,
       complete = function(_, cmd_line)
         if not self.loaded then
-          self:load()
+          return self:load()
         end
         local ok, result = pcall(vim.fn.getcompletion, cmd_line, 'cmdline')
         return ok and result or {}
@@ -877,7 +917,7 @@ function Plugin:cond(condition)
     (type(condition) == 'string' and api.nvim_eval(condition))
     or (type(condition) == 'function' and condition())
   then
-    self:load()
+    self:load(true)
   end
   return self
 end
@@ -1511,7 +1551,6 @@ function M.clean()
 
     -- Scan both start and opt directories
     scan_directory(PACK_DIR)
-    scan_directory(OPT_DIR)
 
     local strive_plugin = Plugin.new({
       name = 'nvimdev/strive',
@@ -1627,7 +1666,7 @@ local function setup_auto_install()
 
   -- UI has not initialized yet, register for UIEnter event
   api.nvim_create_autocmd('UIEnter', {
-    group = api.nvim_create_augroup('strive_auto_install', { clear = true }),
+    group = api.nvim_create_augroup('strive', { clear = false }),
     callback = function()
       vim.schedule(function()
         M.log('debug', 'UIEnter triggered, installing plugins')
@@ -1643,6 +1682,19 @@ end
 if DEFAULT_SETTINGS.auto_install then
   setup_auto_install()
 end
+
+api.nvim_create_autocmd('UIEnter', {
+  group = api.nvim_create_augroup('strive', { clear = false }),
+  once = true,
+  callback = function()
+    vim.schedule(function()
+      api.nvim_exec_autocmds('User', {
+        pattern = 'StriveDone',
+        modeline = false,
+      })
+    end)
+  end,
+})
 
 local t = { install = 1, update = 2, clean = 3 }
 api.nvim_create_user_command('Strive', function(args)
