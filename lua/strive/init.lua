@@ -598,7 +598,7 @@ function Plugin.new(spec)
     is_local = spec.is_local or false, -- Development mode flag
     is_lazy = spec.is_lazy or false, -- Whether to lazy load
     local_path = nil, -- Local path to load
-    branch = spec.branch, -- Git branch to use
+    remote_branch = spec._branch, -- Git branch to use
 
     -- States
     status = STATUS.PENDING, -- Current plugin status
@@ -1005,7 +1005,7 @@ function Plugin:branch(branch_name)
     type(branch_name) == 'string' and branch_name ~= '',
     'Branch name must be a non-empty string'
   )
-  self.branch = branch_name
+  self._branch = branch_name
   return self
 end
 
@@ -1085,9 +1085,9 @@ function Plugin:install()
     }
 
     -- Add branch specification if provided
-    if self.branch then
-      table.insert(cmd, '--branch=' .. self.branch)
-      M.log('debug', string.format('Installing %s from branch: %s', self.name, self.branch))
+    if self._branch then
+      table.insert(cmd, '--branch=' .. self._branch)
+      M.log('debug', string.format('Installing %s from branch: %s', self.name, self._branch))
     end
 
     -- Add URL and path at the end
@@ -1096,7 +1096,7 @@ function Plugin:install()
 
     -- Update status
     self.status = STATUS.INSTALLING
-    local install_msg = self.branch and ('Installing from branch: ' .. self.branch)
+    local install_msg = self._branch and ('Installing from branch: ' .. self._branch)
       or 'Starting installation...'
     ui:update_entry(self.name, self.status, install_msg)
 
@@ -1120,7 +1120,7 @@ function Plugin:install()
 
     if result.success then
       self.status = STATUS.INSTALLED
-      local success_msg = self.branch and ('Installed from branch: ' .. self.branch)
+      local success_msg = self._branch and ('Installed from branch: ' .. self._branch)
         or 'Installation complete'
       ui:update_entry(self.name, self.status, success_msg)
 
@@ -1164,8 +1164,8 @@ function Plugin:has_updates()
     }
 
     -- If a specific branch is set, fetch that branch
-    if self.branch then
-      table.insert(fetch_cmd, self.branch .. ':refs/remotes/origin/' .. self.branch)
+    if self._branch then
+      table.insert(fetch_cmd, self._branch .. ':refs/remotes/origin/' .. self._branch)
     end
 
     local result = Async.try_await(Async.system(fetch_cmd))
@@ -1175,7 +1175,7 @@ function Plugin:has_updates()
     end
 
     -- Compare with the appropriate upstream
-    local upstream_ref = self.branch and '@{upstream}' or '@{upstream}'
+    local upstream_ref = self._branch and '@{upstream}' or '@{upstream}'
     local rev_cmd = {
       'git',
       '-C',
@@ -1249,7 +1249,7 @@ function Plugin:update(skip_check)
 
       if not has_updates then
         self.status = STATUS.UPDATED
-        local up_to_date_msg = self.branch and ('Up to date on branch: ' .. self.branch)
+        local up_to_date_msg = self._branch and ('Up to date on branch: ' .. self._branch)
           or 'Already up to date'
         ui:update_entry(self.name, self.status, up_to_date_msg)
         callback(true, 'up_to_date')
@@ -1259,7 +1259,7 @@ function Plugin:update(skip_check)
 
     -- Update the plugin
     self.status = STATUS.UPDATING
-    local updating_msg = self.branch and ('Updating branch: ' .. self.branch)
+    local updating_msg = self._branch and ('Updating branch: ' .. self._branch)
       or 'Starting update...'
     ui:update_entry(self.name, self.status, updating_msg)
 
@@ -1267,9 +1267,9 @@ function Plugin:update(skip_check)
     local cmd = { 'git', '-C', path, 'pull', '--progress' }
 
     -- If specific branch is set, pull from that branch
-    if self.branch then
+    if self._branch then
       table.insert(cmd, 'origin')
-      table.insert(cmd, self.branch)
+      table.insert(cmd, self._branch)
     end
 
     -- Use our new Async.system wrapper
@@ -1298,13 +1298,13 @@ function Plugin:update(skip_check)
       local commit_info = stdout:match('([a-f0-9]+)%.%.([a-f0-9]+)')
 
       if stdout:find('Already up to date') then
-        update_info = self.branch and ('Already up to date on branch: ' .. self.branch)
+        update_info = self._branch and ('Already up to date on branch: ' .. self._branch)
           or 'Already up to date'
       elseif commit_info then
-        local branch_info = self.branch and (' on branch: ' .. self.branch) or ''
+        local branch_info = self._branch and (' on branch: ' .. self._branch) or ''
         update_info = string.format('Updated to %s%s', commit_info, branch_info)
-      elseif self.branch then
-        update_info = 'Updated on branch: ' .. self.branch
+      elseif self._branch then
+        update_info = 'Updated on branch: ' .. self._branch
       end
 
       ui:update_entry(self.name, self.status, update_info)
@@ -1335,7 +1335,7 @@ function Plugin:install_with_retry()
     end
 
     self.status = STATUS.INSTALLING
-    local install_msg = self.branch and ('Installing from branch: ' .. self.branch)
+    local install_msg = self._branch and ('Installing from branch: ' .. self._branch)
       or 'Starting installation...'
     ui:update_entry(self.name, self.status, install_msg)
 
@@ -1344,8 +1344,8 @@ function Plugin:install_with_retry()
     local cmd = { 'git', 'clone', '--progress' }
 
     -- Add branch specification if provided
-    if self.branch then
-      table.insert(cmd, '--branch=' .. self.branch)
+    if self._branch then
+      table.insert(cmd, '--branch=' .. self._branch)
     end
 
     table.insert(cmd, url)
@@ -1374,7 +1374,7 @@ function Plugin:install_with_retry()
     -- Handle result
     if result.success then
       self.status = STATUS.INSTALLED
-      local success_msg = self.branch and ('Installed from branch: ' .. self.branch)
+      local success_msg = self._branch and ('Installed from branch: ' .. self._branch)
         or 'Installation complete'
       ui:update_entry(self.name, self.status, success_msg)
 
