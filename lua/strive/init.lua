@@ -1009,8 +1009,6 @@ function Plugin:branch(branch_name)
   return self
 end
 
-function Plugin:bind() end
-
 -- Set plugin as a theme
 function Plugin:theme(name)
   self.colorscheme = name or self.plugin_name
