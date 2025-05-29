@@ -597,7 +597,8 @@ function Plugin.new(spec)
     is_remote = not name:find(vim.env.HOME), -- Is it a remote or local plugin
     is_local = spec.is_local or false, -- Development mode flag
     is_lazy = spec.is_lazy or false, -- Whether to lazy load
-    local_path = nil, -- Loacal path to load
+    local_path = nil, -- Local path to load
+    branch = spec.branch, -- Git branch to use
 
     -- States
     status = STATUS.PENDING, -- Current plugin status
@@ -765,7 +766,11 @@ function Plugin:load(do_action, callback)
     end
 
     if do_action and self.run_action then
-      vim.cmd(self.run_action)
+      if type(self.run_action) == 'string' then
+        vim.cmd(self.run_action)
+      else
+        self.run_action()
+      end
     end
 
     if callback then
@@ -944,14 +949,17 @@ function Plugin:keys(mappings)
       if type(rhs) == 'function' then
         self:load(nil, rhs)
       elseif type(rhs) == 'string' then
-        self:load(nil, function() vim.cmd(rhs) end)
+        self:load(nil, function()
+          vim.cmd(rhs)
+        end)
       elseif type(rhs) == 'nil' then
         -- If rhs not specified, it should be defined in plugin config
         -- In this case, we need to pass a callback
         self:load(nil, function()
           vim.schedule(function()
             vim.fn.feedkeys(lhs)
-          end) end)
+          end)
+        end)
       end
     end, opts)
   end
@@ -992,6 +1000,17 @@ function Plugin:after(fn)
   return self
 end
 
+function Plugin:branch(branch_name)
+  assert(
+    type(branch_name) == 'string' and branch_name ~= '',
+    'Branch name must be a non-empty string'
+  )
+  self.branch = branch_name
+  return self
+end
+
+function Plugin:bind() end
+
 -- Set plugin as a theme
 function Plugin:theme(name)
   self.colorscheme = name or self.plugin_name
@@ -1026,7 +1045,7 @@ function Plugin:call_setup()
 end
 
 function Plugin:run(action)
-  assert(type(action) == 'string')
+  assert(type(action) == 'string' or type(action) == 'function')
   self.run_action = action
   return self
 end
@@ -1045,7 +1064,7 @@ function Plugin:depends(deps)
   return self
 end
 
--- Install the plugin
+-- MODIFIED: Install the plugin with branch support
 function Plugin:install()
   if self.is_local or not self.is_remote then
     return Async.wrap(function(cb)
@@ -1063,13 +1082,23 @@ function Plugin:install()
       '--depth=' .. DEFAULT_SETTINGS.git_depth,
       '--single-branch',
       '--progress',
-      url,
-      path,
     }
+
+    -- Add branch specification if provided
+    if self.branch then
+      table.insert(cmd, '--branch=' .. self.branch)
+      M.log('debug', string.format('Installing %s from branch: %s', self.name, self.branch))
+    end
+
+    -- Add URL and path at the end
+    table.insert(cmd, url)
+    table.insert(cmd, path)
 
     -- Update status
     self.status = STATUS.INSTALLING
-    ui:update_entry(self.name, self.status, 'Starting installation...')
+    local install_msg = self.branch and ('Installing from branch: ' .. self.branch)
+      or 'Starting installation...'
+    ui:update_entry(self.name, self.status, install_msg)
 
     -- Use our new Async.system wrapper
     local result = Async.try_await(Async.system(cmd, {
@@ -1091,7 +1120,9 @@ function Plugin:install()
 
     if result.success then
       self.status = STATUS.INSTALLED
-      ui:update_entry(self.name, self.status, 'Installation complete')
+      local success_msg = self.branch and ('Installed from branch: ' .. self.branch)
+        or 'Installation complete'
+      ui:update_entry(self.name, self.status, success_msg)
 
       -- Apply colorscheme if this is a theme
       if self.colorscheme then
@@ -1114,6 +1145,7 @@ function Plugin:install()
   end)()
 end
 
+-- MODIFIED: Check for updates with branch awareness
 function Plugin:has_updates()
   return Async.wrap(function(callback)
     if self.is_local or not self.is_remote then
@@ -1131,19 +1163,26 @@ function Plugin:has_updates()
       'origin',
     }
 
+    -- If a specific branch is set, fetch that branch
+    if self.branch then
+      table.insert(fetch_cmd, self.branch .. ':refs/remotes/origin/' .. self.branch)
+    end
+
     local result = Async.try_await(Async.system(fetch_cmd))
     if not result.success then
       callback(false)
       return
     end
 
+    -- Compare with the appropriate upstream
+    local upstream_ref = self.branch and '@{upstream}' or '@{upstream}'
     local rev_cmd = {
       'git',
       '-C',
       path,
       'rev-list',
       '--count',
-      'HEAD..@{upstream}',
+      'HEAD..' .. upstream_ref,
     }
 
     result = Async.try_await(Async.system(rev_cmd))
@@ -1159,6 +1198,7 @@ function Plugin:has_updates()
   end)()
 end
 
+-- MODIFIED: Update plugin with branch support
 function Plugin:update(skip_check)
   if self.is_local or not self.is_remote then
     return Async.wrap(function(cb)
@@ -1209,7 +1249,9 @@ function Plugin:update(skip_check)
 
       if not has_updates then
         self.status = STATUS.UPDATED
-        ui:update_entry(self.name, self.status, 'Already up to date')
+        local up_to_date_msg = self.branch and ('Up to date on branch: ' .. self.branch)
+          or 'Already up to date'
+        ui:update_entry(self.name, self.status, up_to_date_msg)
         callback(true, 'up_to_date')
         return
       end
@@ -1217,10 +1259,18 @@ function Plugin:update(skip_check)
 
     -- Update the plugin
     self.status = STATUS.UPDATING
-    ui:update_entry(self.name, self.status, 'Starting update...')
+    local updating_msg = self.branch and ('Updating branch: ' .. self.branch)
+      or 'Starting update...'
+    ui:update_entry(self.name, self.status, updating_msg)
 
     local path = self:get_path()
     local cmd = { 'git', '-C', path, 'pull', '--progress' }
+
+    -- If specific branch is set, pull from that branch
+    if self.branch then
+      table.insert(cmd, 'origin')
+      table.insert(cmd, self.branch)
+    end
 
     -- Use our new Async.system wrapper
     local result = Async.try_await(Async.system(cmd, {
@@ -1246,10 +1296,15 @@ function Plugin:update(skip_check)
       local stdout = result.value.stdout or ''
       local update_info = 'Update complete'
       local commit_info = stdout:match('([a-f0-9]+)%.%.([a-f0-9]+)')
+
       if stdout:find('Already up to date') then
-        update_info = 'Already up to date'
+        update_info = self.branch and ('Already up to date on branch: ' .. self.branch)
+          or 'Already up to date'
       elseif commit_info then
-        update_info = string.format('Updated to %s', stdout:match('([a-f0-9]+)%.%.([a-f0-9]+)'))
+        local branch_info = self.branch and (' on branch: ' .. self.branch) or ''
+        update_info = string.format('Updated to %s%s', commit_info, branch_info)
+      elseif self.branch then
+        update_info = 'Updated on branch: ' .. self.branch
       end
 
       ui:update_entry(self.name, self.status, update_info)
@@ -1263,6 +1318,7 @@ function Plugin:update(skip_check)
   end)()
 end
 
+-- MODIFIED: Install with retry and branch support
 function Plugin:install_with_retry()
   if self.is_local or not self.is_remote then
     return Async.wrap(function(cb)
@@ -1279,11 +1335,21 @@ function Plugin:install_with_retry()
     end
 
     self.status = STATUS.INSTALLING
-    ui:update_entry(self.name, self.status, 'Starting installation...')
+    local install_msg = self.branch and ('Installing from branch: ' .. self.branch)
+      or 'Starting installation...'
+    ui:update_entry(self.name, self.status, install_msg)
 
     local path = self:get_path()
     local url = ('https://github.com/%s'):format(self.name)
-    local cmd = { 'git', 'clone', '--progress', url, path }
+    local cmd = { 'git', 'clone', '--progress' }
+
+    -- Add branch specification if provided
+    if self.branch then
+      table.insert(cmd, '--branch=' .. self.branch)
+    end
+
+    table.insert(cmd, url)
+    table.insert(cmd, path)
 
     -- Use retry with the system command (3 retries with exponential backoff)
     local result = Async.try_await(Async.retry(function()
@@ -1308,7 +1374,9 @@ function Plugin:install_with_retry()
     -- Handle result
     if result.success then
       self.status = STATUS.INSTALLED
-      ui:update_entry(self.name, self.status, 'Installation complete')
+      local success_msg = self.branch and ('Installed from branch: ' .. self.branch)
+        or 'Installation complete'
+      ui:update_entry(self.name, self.status, success_msg)
 
       -- Apply colorscheme if this is a theme
       if self.colorscheme then
@@ -1418,7 +1486,7 @@ function M.install()
       table.insert(install_tasks, function(done)
         Async.async(function()
           local result = Async.try_await(
-            DEFAULT_SETTINGS.install_retry and Plugin:install_with_retry() or plugin:install()
+            DEFAULT_SETTINGS.install_retry and plugin:install_with_retry() or plugin:install()
           )
           if not result.success then
             M.log(
