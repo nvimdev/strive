@@ -1731,7 +1731,6 @@ if DEFAULT_SETTINGS.auto_install then
       M.install()
     end)
     startuptime()
-    return
   end
 end
 
