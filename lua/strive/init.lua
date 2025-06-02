@@ -902,7 +902,9 @@ function Plugin:cmd(commands)
       bang = true,
       complete = function(_, cmd_line)
         if not self.loaded then
-          return self:load()
+          self:load()
+          -- wait async source for get completion of command
+          vim.wait(10)
         end
         local ok, result = pcall(vim.fn.getcompletion, cmd_line, 'cmdline')
         return ok and result or {}
