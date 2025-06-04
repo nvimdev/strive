@@ -13,7 +13,8 @@ local plugin_map = {}
 
 -- Data paths
 local data_dir = vim.fn.stdpath('data')
-local PACK_DIR = joinpath(data_dir, 'strive.nvim')
+local START_DIR = joinpath(data_dir, 'site', 'pack', 'strive', 'start')
+local OPT_DIR = joinpath(data_dir, 'site', 'pack', 'strive', 'opt')
 
 -- Add to packpath
 vim.opt.packpath:prepend(joinpath(data_dir, 'site'))
@@ -629,7 +630,8 @@ end
 
 -- Get the plugin installation path
 function Plugin:get_path()
-  return (not self.is_local and not self.local_path) and joinpath(PACK_DIR, self.plugin_name)
+  return (not self.is_local and not self.local_path)
+      and joinpath(self.is_lazy and OPT_DIR or START_DIR, self.plugin_name)
     or (joinpath(self.local_path, self.plugin_name) or self.name)
 end
 
@@ -708,15 +710,14 @@ function Plugin:load(do_action, callback)
       load_opts(self.init_opts)
     end
 
-    vim.opt.rtp:append(plugin_path)
+    if self.is_local then
+      vim.opt.rtp:append(plugin_path)
 
-    local after_path = joinpath(plugin_path, 'after')
-    if isdir(after_path) then
-      vim.opt.rtp:append(after_path)
-    end
+      local after_path = joinpath(plugin_path, 'after')
+      if isdir(after_path) then
+        vim.opt.rtp:append(after_path)
+      end
 
-    local plugin_dir = joinpath(plugin_path, 'plugin')
-    if isdir(plugin_dir) then
       local result = Async.try_await(self:load_scripts())
       if result.error then
         M.log(
@@ -725,6 +726,8 @@ function Plugin:load(do_action, callback)
         )
         return
       end
+    elseif self.is_lazy then
+      vim.cmd.packadd(self.plugin_name)
     end
 
     self.loaded = true
@@ -894,17 +897,23 @@ function Plugin:cmd(commands)
       -- Remove this command to avoid recursion
       pcall(api.nvim_del_user_command, name)
       local args = opts.args ~= '' and (' ' .. opts.args) or ''
-      self:load(false, function()
-        execute(name, opts.bang, args)
-      end)
+      local bang = opts.bang
+
+      Async.async(function()
+        self:load()
+        if self.is_local then
+          Async.await(Async.delay(5))
+        end
+        Async.safe_schedule(function()
+          execute(name, bang, args)
+        end)
+      end)()
     end, {
       nargs = '*',
       bang = true,
       complete = function(_, cmd_line)
         if not self.loaded then
           self:load()
-          -- wait async source for get completion of command
-          vim.wait(10)
         end
         local ok, result = pcall(vim.fn.getcompletion, cmd_line, 'cmdline')
         return ok and result or {}
@@ -1020,7 +1029,7 @@ function Plugin:theme(name)
     local installed = Async.await(self:is_installed())
     if installed then
       vim.schedule(function()
-        vim.opt.rtp:append(joinpath(PACK_DIR, self.plugin_name))
+        vim.opt.rtp:append(joinpath(START_DIR, self.plugin_name))
         vim.cmd.colorscheme(self.colorscheme)
       end)
     end
@@ -1064,7 +1073,7 @@ function Plugin:depends(deps)
   return self
 end
 
--- MODIFIED: Install the plugin with branch support
+-- Install the plugin
 function Plugin:install()
   if self.is_local or not self.is_remote then
     return Async.wrap(function(cb)
@@ -1145,7 +1154,6 @@ function Plugin:install()
   end)()
 end
 
--- MODIFIED: Check for updates with branch awareness
 function Plugin:has_updates()
   return Async.wrap(function(callback)
     if self.is_local or not self.is_remote then
@@ -1198,7 +1206,6 @@ function Plugin:has_updates()
   end)()
 end
 
--- MODIFIED: Update plugin with branch support
 function Plugin:update(skip_check)
   if self.is_local or not self.is_remote then
     return Async.wrap(function(cb)
@@ -1318,7 +1325,6 @@ function Plugin:update(skip_check)
   end)()
 end
 
--- MODIFIED: Install with retry and branch support
 function Plugin:install_with_retry()
   if self.is_local or not self.is_remote then
     return Async.wrap(function(cb)
@@ -1401,7 +1407,6 @@ function Plugin:install_with_retry()
     callback(result.success)
   end)()
 end
-
 -- =====================================================================
 -- 6. Manager Functions
 -- =====================================================================
@@ -1622,7 +1627,8 @@ function M.clean()
     end
 
     -- Scan both start and opt directories
-    scan_directory(PACK_DIR)
+    scan_directory(START_DIR)
+    scan_directory(OPT_DIR)
 
     local strive_plugin = Plugin.new({
       name = 'nvimdev/strive',
