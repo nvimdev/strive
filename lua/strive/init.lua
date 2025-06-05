@@ -623,6 +623,7 @@ function Plugin.new(spec)
 
     user_commands = {}, -- Created user commands
     run_action = spec.build or nil,
+    need_build = false,
   }, Plugin)
 
   return self
@@ -768,7 +769,7 @@ function Plugin:load(do_action, callback)
       load_opts(self.config_opts)
     end
 
-    if do_action and self.run_action then
+    if do_action and self.run_action and self.loaded then
       if type(self.run_action) == 'string' then
         vim.cmd(self.run_action)
       else
@@ -1138,9 +1139,9 @@ function Plugin:install()
         self:theme(self.colorscheme)
       end
 
-      -- Run build command if specified
+      -- need build command if specified
       if self.run_action then
-        self:load(true)
+        self.need_build = true
       end
     else
       self.status = STATUS.ERROR
@@ -1484,6 +1485,7 @@ function M.install()
     ui:open()
 
     local task_queue = TaskQueue.new(DEFAULT_SETTINGS.max_concurrent_tasks)
+    local plugins_with_build = {}
 
     -- Create installation tasks with proper error handling
     local install_tasks = {}
@@ -1500,6 +1502,10 @@ function M.install()
             )
           end
 
+          if plugin.need_build then
+            plugins_with_build[#plugins_with_build + 1] = plugin
+          end
+
           done()
         end)()
       end)
@@ -1513,10 +1519,13 @@ function M.install()
     -- Set completion callback
     task_queue:on_complete(function()
       M.log('info', 'Installation completed.')
-
       -- Close UI after a delay
       Async.await(Async.delay(2000))
       ui:close()
+
+      for _, p in ipairs(plugins_with_build) do
+        p:load(true)
+      end
     end)
   end)()
 end
