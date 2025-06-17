@@ -1722,6 +1722,22 @@ function M.clean()
   end)()
 end
 
+function M.remove(plugin)
+  local path = vim.fs.joinpath(OPT_DIR, plugin)
+  if not isdir(path) then
+    path = vim.fs.joinpath(START_DIR, plugin)
+    if not isdir(path) then
+      return
+    end
+  end
+
+  local ok, result = pcall(vim.fn.delete, path, 'rf')
+  if not ok or result ~= 0 then
+    return M.log('Info', 'Failed to remove')
+  end
+  M.log('warn', ('Plugin %s removed successful'):format(plugin))
+end
+
 -- use uv instead of calling clock_time with ffi
 local function startuptime()
   if vim.g.strive_startup_time ~= nil then
@@ -1772,10 +1788,14 @@ api.nvim_create_autocmd('UIEnter', {
   end,
 })
 
-local t = { install = 1, update = 2, clean = 3 }
+local t = { install = 1, update = 2, clean = 3, remove = 4 }
 api.nvim_create_user_command('Strive', function(args)
-  if t[args.args] then
-    M[args.args]()
+  if #args.fargs == 0 then
+    return
+  end
+
+  if t[args.fargs[1]] then
+    M[args.fargs[1]](args.fargs[2])
   end
 end, {
   desc = 'Install plugins',
